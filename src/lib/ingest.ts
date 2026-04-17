@@ -9,7 +9,10 @@ import { getFileName, normalizePath } from "@/lib/path-utils"
 import { checkIngestCache, saveIngestCache } from "@/lib/ingest-cache"
 import { buildLanguageDirective } from "@/lib/output-language"
 
-const FILE_BLOCK_REGEX = /---FILE:\s*([^\n-]+?)\s*---\n([\s\S]*?)---END FILE---/g
+// Path capture group allows any non-newline char so hyphenated paths like
+// "wiki/concepts/multi-head-attention.md" are accepted. The lazy `+?` plus
+// the following `\s*---\n` anchor still stops at the closing ---.
+const FILE_BLOCK_REGEX = /---FILE:\s*([^\n]+?)\s*---\n([\s\S]*?)---END FILE---/g
 
 /**
  * Build the language rule for ingest prompts.
