@@ -283,13 +283,12 @@ export function ChatPanel() {
           `[${i + 1}] ${p.title} (${p.path})`
         ).join("\n")
 
+        const userLanguage = detectLanguage(text)
+
         systemMessages.push({
           role: "system",
           content: [
             "You are a knowledgeable wiki assistant. Answer questions based on the wiki content provided below.",
-            "",
-            `## CRITICAL: Response Language`,
-            `The user is writing in **${detectLanguage(text)}**. You MUST respond in **${detectLanguage(text)}** regardless of what language the wiki content is written in. This is a mandatory requirement.`,
             "",
             "## Rules",
             "- Answer based ONLY on the numbered wiki pages provided below.",
@@ -305,8 +304,23 @@ export function ChatPanel() {
             index ? `## Wiki Index\n${index}` : "",
             relevantPages.length > 0 ? `## Page List\n${pageList}` : "",
             `## Wiki Pages\n\n${pagesContext}`,
+            "",
+            "---",
+            "",
+            `## ⚠️ MANDATORY OUTPUT LANGUAGE: ${userLanguage}`,
+            "",
+            `You MUST write your entire response in **${userLanguage}**.`,
+            `The wiki content above may be in a different language, but this is IRRELEVANT to your output language.`,
+            `Ignore the language of the wiki content. Write in ${userLanguage} only.`,
+            `Even proper nouns should use standard ${userLanguage} transliteration when appropriate.`,
+            `DO NOT use any other language. This overrides all other instructions.`,
           ].filter(Boolean).join("\n"),
         })
+
+        // Stash language reminder to inject right before the user's current message
+        // (placed after history so it's the last system instruction LLM sees)
+        const langReminder = `REMINDER: Respond in ${userLanguage}. The user's message is in ${userLanguage}; your response must also be in ${userLanguage}.`
+        ;(systemMessages as unknown as { __langReminder?: string }).__langReminder = langReminder
 
         lastQueryPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
         queryRefs = [...lastQueryPages]
@@ -318,7 +332,17 @@ export function ChatPanel() {
         .filter((m) => m.role === "user" || m.role === "assistant")
         .slice(-maxHistoryMessages)
 
-      const llmMessages = [...systemMessages, ...chatMessagesToLLM(activeConvMessages)]
+      // Inject language reminder as system message between history and final user query
+      const langReminder = (systemMessages as unknown as { __langReminder?: string }).__langReminder
+      const historyMessages = chatMessagesToLLM(activeConvMessages)
+      const llmMessages = langReminder && historyMessages.length > 0
+        ? [
+            ...systemMessages,
+            ...historyMessages.slice(0, -1),
+            { role: "system" as const, content: langReminder },
+            ...historyMessages.slice(-1),
+          ]
+        : [...systemMessages, ...historyMessages]
 
       const controller = new AbortController()
       abortRef.current = controller
