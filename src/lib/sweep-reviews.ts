@@ -129,8 +129,10 @@ function pageExists(name: string, index: WikiIndex): boolean {
  *   - Wrapped in prose: find the first balanced `{...}` object via brace depth
  *
  * Returns empty string if no balanced object is found.
+ *
+ * @internal Exported for unit tests only.
  */
-function extractJsonObject(raw: string): string {
+export function extractJsonObject(raw: string): string {
   let text = raw.trim()
 
   // Strip an opening ```json or ``` fence (with or without newline)
