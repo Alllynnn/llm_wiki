@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --exclude='**/*.real-llm.test.ts'",
+    "test:llm": "RUN_LLM_TESTS=1 vitest run real-llm --no-file-parallelism --reporter=verbose",
     "tauri": "tauri"
   },
   "dependencies": {
