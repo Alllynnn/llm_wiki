@@ -393,6 +393,250 @@ fn build_pptx_media_slide_map(
     out
 }
 
+// ── Extract-and-save: write to disk, skip the base64 round-trip ────────
+//
+// The base64-returning commands above are useful for future
+// captioning paths that need bytes in-memory. The ingest pipeline
+// just wants to land images on disk and reference them from
+// markdown — the round-trip via JS is wasteful (5 MB image → 6.7 MB
+// base64 string → JS allocates → JS calls back to Rust → decode →
+// write). The functions below short-circuit by writing directly.
+
+/// Metadata for an image that's already been written to disk.
+/// Mirrors `ExtractedImage` but swaps `data_base64` for `rel_path` —
+/// the path the caller can embed in markdown (`![alt](rel_path)`).
+#[derive(Debug, Serialize)]
+pub struct SavedImage {
+    pub index: u32,
+    pub mime_type: String,
+    pub page: Option<u32>,
+    pub width: u32,
+    pub height: u32,
+    /// Path of the written file, relative to `dest_dir_relative_to`.
+    /// E.g. when `dest_dir` is `<project>/wiki/media/foo` and
+    /// `dest_dir_relative_to` is `<project>/wiki`, this is
+    /// `media/foo/img-1.png`. The caller-provided base lets us
+    /// generate paths that work inside markdown rendered from
+    /// anywhere under the wiki root.
+    pub rel_path: String,
+    /// Absolute path on disk — the chat / file-preview UI uses this
+    /// (via `convertFileSrc`) to actually load the image.
+    pub abs_path: String,
+    pub sha256: String,
+}
+
+fn save_one_image(
+    bytes: &[u8],
+    dest_dir: &Path,
+    dest_dir_relative_to: &Path,
+    file_name: &str,
+) -> Result<(String, String), String> {
+    if !dest_dir.exists() {
+        std::fs::create_dir_all(dest_dir)
+            .map_err(|e| format!("create_dir_all '{}': {e}", dest_dir.display()))?;
+    }
+    let abs = dest_dir.join(file_name);
+    std::fs::write(&abs, bytes).map_err(|e| format!("write '{}': {e}", abs.display()))?;
+
+    let rel = abs
+        .strip_prefix(dest_dir_relative_to)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| file_name.to_string());
+    Ok((rel, abs.to_string_lossy().to_string()))
+}
+
+fn ext_for_mime(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        _ => "bin",
+    }
+}
+
+/// PDF: extract every embedded image AND write each to
+/// `dest_dir / img-<index>.<ext>`. `rel_to` is the directory the
+/// returned `rel_path` is anchored at (typically the wiki root).
+/// PNG re-encoding is unconditional (pdfium hands us decoded bitmaps
+/// regardless of source codec).
+pub fn extract_and_save_pdf_images(
+    path: &str,
+    dest_dir: &Path,
+    rel_to: &Path,
+    options: &ExtractOptions,
+) -> Result<Vec<SavedImage>, String> {
+    use pdfium_render::prelude::*;
+
+    let pdfium = crate::commands::fs::pdfium()?;
+    let doc = pdfium
+        .load_pdf_from_file(path, None)
+        .map_err(|e| format!("Failed to open PDF '{path}': {e}"))?;
+
+    let mut out: Vec<SavedImage> = Vec::new();
+    let mut idx: u32 = 0;
+
+    'pages: for (page_idx, page) in doc.pages().iter().enumerate() {
+        for object in page.objects().iter() {
+            let image = match object.as_image_object() {
+                Some(img) => img,
+                None => continue,
+            };
+            let dyn_img = match image.get_raw_image() {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!(
+                        "[extract_and_save_pdf_images] page {} image read failed: {e}",
+                        page_idx + 1
+                    );
+                    continue;
+                }
+            };
+            let width = dyn_img.width();
+            let height = dyn_img.height();
+            if width < options.min_width || height < options.min_height {
+                continue;
+            }
+
+            let mut png_bytes: Vec<u8> = Vec::new();
+            if let Err(e) = dyn_img.write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            ) {
+                eprintln!(
+                    "[extract_and_save_pdf_images] page {} PNG encode failed: {e}",
+                    page_idx + 1
+                );
+                continue;
+            }
+
+            idx += 1;
+            let file_name = format!("img-{idx}.png");
+            let (rel_path, abs_path) = save_one_image(&png_bytes, dest_dir, rel_to, &file_name)?;
+            let sha256 = sha256_hex(&png_bytes);
+
+            out.push(SavedImage {
+                index: idx,
+                mime_type: "image/png".to_string(),
+                page: Some((page_idx + 1) as u32),
+                width,
+                height,
+                rel_path,
+                abs_path,
+                sha256,
+            });
+
+            if out.len() >= options.max_images {
+                eprintln!(
+                    "[extract_and_save_pdf_images] reached max_images={} cap; skipped rest",
+                    options.max_images
+                );
+                break 'pages;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// PPTX/DOCX: pull embedded images directly from the zip media/
+/// directory and write each to `dest_dir`. Source format is
+/// preserved (PNG stays PNG, JPEG stays JPEG) since pulling the raw
+/// bytes is cheap and there's no compositing happening.
+pub fn extract_and_save_office_images(
+    path: &str,
+    dest_dir: &Path,
+    rel_to: &Path,
+    options: &ExtractOptions,
+) -> Result<Vec<SavedImage>, String> {
+    let file = File::open(path).map_err(|e| format!("Failed to open '{path}': {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip '{path}': {e}"))?;
+
+    let is_pptx = archive
+        .file_names()
+        .any(|n| n == "ppt/presentation.xml" || n.starts_with("ppt/slides/slide"));
+    let media_to_slide = if is_pptx {
+        build_pptx_media_slide_map(&mut archive)
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let media_indices: Vec<usize> = (0..archive.len())
+        .filter(|i| {
+            archive
+                .by_index_raw(*i)
+                .ok()
+                .map(|f| is_media_path(f.name()))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    let mut out: Vec<SavedImage> = Vec::new();
+    let mut idx: u32 = 0;
+
+    for archive_idx in media_indices {
+        let mut entry = match archive.by_index(archive_idx) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[extract_and_save_office_images] zip entry read failed: {e}");
+                continue;
+            }
+        };
+        let entry_name = entry.name().to_string();
+        let mime_type = match guess_mime_from_name(&entry_name) {
+            Some(m) => m,
+            None => continue,
+        };
+
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        if let Err(e) = entry.read_to_end(&mut bytes) {
+            eprintln!("[extract_and_save_office_images] read '{entry_name}' failed: {e}");
+            continue;
+        }
+
+        let (width, height) = match image::load_from_memory(&bytes) {
+            Ok(img) => (img.width(), img.height()),
+            Err(e) => {
+                eprintln!("[extract_and_save_office_images] decode '{entry_name}' failed: {e}");
+                continue;
+            }
+        };
+        if width < options.min_width || height < options.min_height {
+            continue;
+        }
+
+        idx += 1;
+        let ext = ext_for_mime(&mime_type);
+        let file_name = format!("img-{idx}.{ext}");
+        let (rel_path, abs_path) = save_one_image(&bytes, dest_dir, rel_to, &file_name)?;
+        let sha256 = sha256_hex(&bytes);
+        let page = media_to_slide.get(&entry_name).copied().flatten();
+
+        out.push(SavedImage {
+            index: idx,
+            mime_type,
+            page,
+            width,
+            height,
+            rel_path,
+            abs_path,
+            sha256,
+        });
+
+        if out.len() >= options.max_images {
+            eprintln!(
+                "[extract_and_save_office_images] reached max_images={} cap; skipped rest",
+                options.max_images
+            );
+            break;
+        }
+    }
+
+    Ok(out)
+}
+
 // ── Tauri command bindings ─────────────────────────────────────────────
 
 #[tauri::command]
@@ -406,6 +650,38 @@ pub fn extract_pdf_images_cmd(path: String) -> Result<Vec<ExtractedImage>, Strin
 pub fn extract_office_images_cmd(path: String) -> Result<Vec<ExtractedImage>, String> {
     crate::panic_guard::run_guarded("extract_office_images", || {
         extract_office_images(&path, &ExtractOptions::default())
+    })
+}
+
+#[tauri::command]
+pub fn extract_and_save_pdf_images_cmd(
+    source_path: String,
+    dest_dir: String,
+    rel_to: String,
+) -> Result<Vec<SavedImage>, String> {
+    crate::panic_guard::run_guarded("extract_and_save_pdf_images", || {
+        extract_and_save_pdf_images(
+            &source_path,
+            Path::new(&dest_dir),
+            Path::new(&rel_to),
+            &ExtractOptions::default(),
+        )
+    })
+}
+
+#[tauri::command]
+pub fn extract_and_save_office_images_cmd(
+    source_path: String,
+    dest_dir: String,
+    rel_to: String,
+) -> Result<Vec<SavedImage>, String> {
+    crate::panic_guard::run_guarded("extract_and_save_office_images", || {
+        extract_and_save_office_images(
+            &source_path,
+            Path::new(&dest_dir),
+            Path::new(&rel_to),
+            &ExtractOptions::default(),
+        )
     })
 }
 

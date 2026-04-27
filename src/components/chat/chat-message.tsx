@@ -17,6 +17,7 @@ import type { FileNode } from "@/types/wiki"
 import { convertLatexToUnicode } from "@/lib/latex-to-unicode"
 import { normalizePath, getFileName } from "@/lib/path-utils"
 import { makeQueryFileName } from "@/lib/wiki-filename"
+import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
 
 // Module-level cache of source file names
 let cachedSourceFiles: string[] = []
@@ -481,6 +482,12 @@ function MarkdownContent({ content }: { content: string }) {
   // Strip hidden comments
   const cleaned = content.replace(/<!--.*?-->/gs, "").trimEnd()
 
+  // Project path for resolving wiki-relative image src in chat
+  // replies (LLM may surface images that came in via retrieved
+  // chunks, e.g. when the chat answer cites a diagram from a wiki
+  // page). Same convention the file-preview uses.
+  const projectPath = useWikiStore((s) => s.project?.path ?? null)
+
   // Separate thinking blocks from main content
   const { thinking, answer } = useMemo(() => separateThinking(cleaned), [cleaned])
   const processed = useMemo(() => processContent(answer), [answer])
@@ -504,6 +511,15 @@ function MarkdownContent({ content }: { content: string }) {
                 </span>
               )
             },
+            img: ({ src, alt, ...props }) => (
+              <img
+                src={typeof src === "string" ? resolveMarkdownImageSrc(src, projectPath) : undefined}
+                alt={alt ?? ""}
+                className="my-2 max-w-full rounded border border-border/40"
+                loading="lazy"
+                {...props}
+              />
+            ),
             table: ({ children, ...props }) => (
               <div className="my-2 overflow-x-auto rounded border border-border">
                 <table className="w-full border-collapse text-xs" {...props}>{children}</table>

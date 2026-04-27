@@ -8,6 +8,10 @@ import { useReviewStore, type ReviewItem } from "@/stores/review-store"
 import { getFileName, normalizePath } from "@/lib/path-utils"
 import { checkIngestCache, saveIngestCache } from "@/lib/ingest-cache"
 import { withProjectLock } from "@/lib/project-mutex"
+import {
+  extractAndSaveSourceImages,
+  buildImageMarkdownSection,
+} from "@/lib/extract-source-images"
 import { buildLanguageDirective } from "@/lib/output-language"
 import { detectLanguage } from "@/lib/detect-language"
 
@@ -273,9 +277,27 @@ async function autoIngestImpl(
     return cachedFiles
   }
 
-  const truncatedContent = sourceContent.length > 50000
-    ? sourceContent.slice(0, 50000) + "\n\n[...truncated...]"
-    : sourceContent
+  // ── Step 0.5: Extract embedded images ─────────────────────────
+  // Pulls every embedded image out of PDF / PPTX / DOCX into
+  // `wiki/media/<source-slug>/`, returns metadata. Markdown image
+  // references get appended to the source content the LLM sees, so
+  // generated wiki pages can reference figures by page number even
+  // though we don't have captions yet (Phase 3a). Failure here is
+  // never fatal — extractAndSaveSourceImages logs + returns [] on
+  // any error.
+  activity.updateItem(activityId, { detail: "Extracting embedded images..." })
+  const savedImages = await extractAndSaveSourceImages(pp, sp)
+  const imageSection = buildImageMarkdownSection(savedImages)
+  const enrichedSourceContent = sourceContent + imageSection
+  if (savedImages.length > 0) {
+    console.log(
+      `[ingest:images] saved ${savedImages.length} image(s) for "${fileName}" → wiki/media/${fileName.replace(/\.[^.]+$/, "")}/`,
+    )
+  }
+
+  const truncatedContent = enrichedSourceContent.length > 50000
+    ? enrichedSourceContent.slice(0, 50000) + "\n\n[...truncated...]"
+    : enrichedSourceContent
 
   // ── Step 1: Analysis ──────────────────────────────────────────
   // LLM reads the source and produces a structured analysis:
