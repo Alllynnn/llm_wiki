@@ -1,0 +1,471 @@
+//! Image extraction from PDF / PPTX / DOCX (Phase 1 of the multimodal
+//! pipeline; see plans/multimodal-images.md).
+//!
+//! NO LLM calls happen in this module. Output is the raw extracted
+//! images as PNG-encoded base64 strings, ready for either:
+//!   - the vision-caption helper (Phase 3) which sends them to a VLM
+//!   - direct write-to-disk in `wiki/media/<source-slug>/`
+//!
+//! This module is intentionally separate from `fs.rs` (which already
+//! has its own pdfium binding lifecycle for text extraction). PDF
+//! image extraction reuses the same global `Pdfium` instance via the
+//! `pdfium()` helper exposed by `fs.rs`.
+//!
+//! Outputs are deterministic for a given input file (same image
+//! ordering, same `index` per image), so the dedup cache in Phase 3
+//! can key purely on the SHA-256 of `data_base64`.
+
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+/// Filter knobs. The defaults mirror what's documented in
+/// plans/multimodal-images.md; callers (the TS layer wiring this up)
+/// will eventually surface them in Settings.
+#[derive(Debug, Clone)]
+pub struct ExtractOptions {
+    /// Skip images smaller than this on EITHER axis. 100×100 catches
+    /// the vast majority of icons / logos / page-corner decorations
+    /// without dropping legitimate small chart insets.
+    pub min_width: u32,
+    pub min_height: u32,
+    /// Hard cap on the number of images returned per document. A
+    /// pathological 5000-image PDF would otherwise blow up memory
+    /// (each image base64'd is ~MB-scale) AND blow up downstream VLM
+    /// cost during Phase 3.
+    pub max_images: usize,
+}
+
+impl Default for ExtractOptions {
+    fn default() -> Self {
+        Self {
+            min_width: 100,
+            min_height: 100,
+            max_images: 500,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedImage {
+    /// 1-based index in document order. Stable across re-extractions.
+    /// Used as the filename suffix when the caller writes images to
+    /// `wiki/media/<slug>/img-<index>.<ext>`.
+    pub index: u32,
+    /// MIME type ("image/png" / "image/jpeg" / etc.). PNG for any
+    /// image we re-encode (PDFs always); pass-through for office docs
+    /// where the original bytes are already in a web-friendly format.
+    pub mime_type: String,
+    /// 1-based page number for PDFs / 1-based slide number for PPTX.
+    /// `None` for DOCX (which doesn't have a per-image page concept
+    /// at extraction time without parsing document.xml position
+    /// markers, which is more work than this phase needs).
+    pub page: Option<u32>,
+    pub width: u32,
+    pub height: u32,
+    /// Image bytes, base64-encoded. JSON IPC can't carry raw binary.
+    pub data_base64: String,
+    /// SHA-256 hex of the *encoded* bytes (same encoding as
+    /// `data_base64` decodes to). Used by the Phase 3 caption cache
+    /// to dedupe identical images across files.
+    pub sha256: String,
+}
+
+// ── PDF (pdfium) ────────────────────────────────────────────────────────
+
+/// Iterate every PDF page, extract every embedded raster image, and
+/// re-encode each to PNG. Vector content (paths, glyph outlines) is
+/// NOT extracted here — that's a Phase 1.5 follow-up if needed (would
+/// involve rendering the entire page to a bitmap as a fallback).
+pub fn extract_pdf_images(
+    path: &str,
+    options: &ExtractOptions,
+) -> Result<Vec<ExtractedImage>, String> {
+    use pdfium_render::prelude::*;
+
+    let pdfium = crate::commands::fs::pdfium()?;
+    let doc = pdfium
+        .load_pdf_from_file(path, None)
+        .map_err(|e| format!("Failed to open PDF '{path}': {e}"))?;
+
+    let mut out: Vec<ExtractedImage> = Vec::new();
+    let mut idx: u32 = 0;
+
+    'pages: for (page_idx, page) in doc.pages().iter().enumerate() {
+        for object in page.objects().iter() {
+            // Only image objects. Path / text / shading / form / etc.
+            // are all skipped — we don't try to rasterize vector charts
+            // in this phase.
+            let image = match object.as_image_object() {
+                Some(img) => img,
+                None => continue,
+            };
+
+            // get_raw_image returns an `image::DynamicImage`. PDFium
+            // can fail per-image on a corrupt embed; we log + skip
+            // rather than aborting the whole document.
+            let dyn_img = match image.get_raw_image() {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!(
+                        "[extract_pdf_images] page {} image read failed: {e}",
+                        page_idx + 1
+                    );
+                    continue;
+                }
+            };
+
+            let width = dyn_img.width();
+            let height = dyn_img.height();
+            if width < options.min_width || height < options.min_height {
+                continue;
+            }
+
+            // Re-encode to PNG. We don't try to preserve the source
+            // codec — PDFium often hands us raw RGBA, and even when
+            // the embedded form was JPEG, decode → re-encode is fine
+            // for the kind of resolutions inside PDFs.
+            let mut png_bytes: Vec<u8> = Vec::new();
+            if let Err(e) = dyn_img.write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            ) {
+                eprintln!(
+                    "[extract_pdf_images] page {} PNG encode failed: {e}",
+                    page_idx + 1
+                );
+                continue;
+            }
+
+            idx += 1;
+            let data_base64 = B64.encode(&png_bytes);
+            let sha256 = sha256_hex(&png_bytes);
+
+            out.push(ExtractedImage {
+                index: idx,
+                mime_type: "image/png".to_string(),
+                page: Some((page_idx + 1) as u32),
+                width,
+                height,
+                data_base64,
+                sha256,
+            });
+
+            if out.len() >= options.max_images {
+                eprintln!(
+                    "[extract_pdf_images] reached max_images={} cap; remaining images skipped",
+                    options.max_images
+                );
+                break 'pages;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+// ── PPTX / DOCX (zip) ──────────────────────────────────────────────────
+
+/// Office Open XML formats (PPTX, DOCX) embed images verbatim under
+/// `<root>/media/`. We don't parse the surrounding XML to figure out
+/// which slide / paragraph an image lives in — that's more work than
+/// this phase needs. PPTX gets a slide number heuristic via the
+/// reference graph (`slide<N>.xml.rels` files reference `media/...`),
+/// but for v1 we just pass `page: None` for DOCX and a best-effort
+/// slide number for PPTX.
+pub fn extract_office_images(
+    path: &str,
+    options: &ExtractOptions,
+) -> Result<Vec<ExtractedImage>, String> {
+    let file = File::open(path).map_err(|e| format!("Failed to open '{path}': {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read zip '{path}': {e}"))?;
+
+    // Detect whether this is a PPTX or DOCX/etc. by looking for the
+    // canonical xml entry. PPTX has presentation.xml; DOCX has
+    // document.xml. Only PPTX gets the slide-number lookup.
+    let is_pptx = archive
+        .file_names()
+        .any(|n| n == "ppt/presentation.xml" || n.starts_with("ppt/slides/slide"));
+
+    // Build a map of media_filename -> Option<slide_number>. For
+    // PPTX, scan each slide<N>.xml.rels for media references. For
+    // DOCX, no per-image page info — leave map empty / None.
+    let media_to_slide = if is_pptx {
+        build_pptx_media_slide_map(&mut archive)
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    // List media entries up front so we can iterate by_index in a
+    // stable order (file_names order is consistent within a single
+    // archive). `by_index` is the zip crate's recommended pattern
+    // for iteration since `by_name` re-walks the central directory
+    // on every call.
+    let media_indices: Vec<usize> = (0..archive.len())
+        .filter(|i| {
+            archive
+                .by_index_raw(*i)
+                .ok()
+                .map(|f| is_media_path(f.name()))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    let mut out: Vec<ExtractedImage> = Vec::new();
+    let mut idx: u32 = 0;
+
+    for archive_idx in media_indices {
+        let mut entry = match archive.by_index(archive_idx) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[extract_office_images] zip entry {archive_idx} read failed: {e}");
+                continue;
+            }
+        };
+
+        let entry_name = entry.name().to_string();
+        let mime_type = guess_mime_from_name(&entry_name);
+        if mime_type.is_none() {
+            // Unknown extension (svg / emf / wmf etc.) — skip rather
+            // than try to handle vector formats in this phase.
+            continue;
+        }
+        let mime_type = mime_type.unwrap();
+
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        if let Err(e) = entry.read_to_end(&mut bytes) {
+            eprintln!("[extract_office_images] read '{entry_name}' failed: {e}");
+            continue;
+        }
+
+        // We need width/height to apply the size filter. Decoding via
+        // the `image` crate is the safest cross-format path; it
+        // recognizes PNG/JPEG/GIF/WEBP/BMP without re-encoding.
+        let (width, height) = match image::load_from_memory(&bytes) {
+            Ok(img) => (img.width(), img.height()),
+            Err(e) => {
+                eprintln!("[extract_office_images] decode '{entry_name}' failed: {e}");
+                continue;
+            }
+        };
+        if width < options.min_width || height < options.min_height {
+            continue;
+        }
+
+        idx += 1;
+        let data_base64 = B64.encode(&bytes);
+        let sha256 = sha256_hex(&bytes);
+        let page = media_to_slide.get(&entry_name).copied().flatten();
+
+        out.push(ExtractedImage {
+            index: idx,
+            mime_type,
+            page,
+            width,
+            height,
+            data_base64,
+            sha256,
+        });
+
+        if out.len() >= options.max_images {
+            eprintln!(
+                "[extract_office_images] reached max_images={} cap; remaining skipped",
+                options.max_images
+            );
+            break;
+        }
+    }
+
+    Ok(out)
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+fn is_media_path(name: &str) -> bool {
+    // PPTX: ppt/media/...    DOCX: word/media/...    XLSX: xl/media/...
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("ppt/media/")
+        || lower.starts_with("word/media/")
+        || lower.starts_with("xl/media/")
+}
+
+fn guess_mime_from_name(name: &str) -> Option<String> {
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png".to_string()),
+        "jpg" | "jpeg" => Some("image/jpeg".to_string()),
+        "gif" => Some("image/gif".to_string()),
+        "webp" => Some("image/webp".to_string()),
+        "bmp" => Some("image/bmp".to_string()),
+        // Vector formats explicitly skipped — we don't have a
+        // rasterizer wired up in this phase.
+        _ => None,
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    hex_encode(&digest)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Walk every `ppt/slides/slide<N>.xml.rels` file and record which
+/// `ppt/media/*` files each slide references. Returns a flat map
+/// `media_path -> Some(slide_number)`. If a media file isn't
+/// referenced from any slide (rare; usually unused theme assets),
+/// it's absent from the map and gets `None` at the call site.
+fn build_pptx_media_slide_map(
+    archive: &mut zip::ZipArchive<File>,
+) -> std::collections::HashMap<String, Option<u32>> {
+    use std::collections::HashMap;
+    let mut out: HashMap<String, Option<u32>> = HashMap::new();
+
+    // Collect rels paths first so we don't hold an active `archive`
+    // borrow while reading. The clone is cheap (just file names).
+    let rels_paths: Vec<String> = archive
+        .file_names()
+        .filter(|n| {
+            // ppt/slides/_rels/slide<N>.xml.rels
+            n.starts_with("ppt/slides/_rels/slide") && n.ends_with(".xml.rels")
+        })
+        .map(String::from)
+        .collect();
+
+    for rels_path in rels_paths {
+        // Slide number is the digits between "slide" and ".xml.rels".
+        let slide_num: Option<u32> = rels_path
+            .strip_prefix("ppt/slides/_rels/slide")
+            .and_then(|s| s.strip_suffix(".xml.rels"))
+            .and_then(|s| s.parse().ok());
+
+        let mut entry = match archive.by_name(&rels_path) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let mut xml = String::new();
+        if entry.read_to_string(&mut xml).is_err() {
+            continue;
+        }
+
+        // Naive extraction: rels XML has Target="../media/imageN.png"
+        // attributes for image relationships. We don't bother with a
+        // full XML parser — a substring scan is plenty for this.
+        let mut search_from = 0;
+        while let Some(pos) = xml[search_from..].find("Target=\"") {
+            let start = search_from + pos + "Target=\"".len();
+            let end = match xml[start..].find('"') {
+                Some(e) => start + e,
+                None => break,
+            };
+            let target = &xml[start..end];
+            search_from = end + 1;
+
+            // Targets are relative to the slide's _rels folder, e.g.
+            // "../media/image3.png" → "ppt/media/image3.png".
+            if let Some(stripped) = target.strip_prefix("../") {
+                let canonical = format!("ppt/{stripped}");
+                if is_media_path(&canonical) {
+                    out.insert(canonical, slide_num);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+// ── Tauri command bindings ─────────────────────────────────────────────
+
+#[tauri::command]
+pub fn extract_pdf_images_cmd(path: String) -> Result<Vec<ExtractedImage>, String> {
+    crate::panic_guard::run_guarded("extract_pdf_images", || {
+        extract_pdf_images(&path, &ExtractOptions::default())
+    })
+}
+
+#[tauri::command]
+pub fn extract_office_images_cmd(path: String) -> Result<Vec<ExtractedImage>, String> {
+    crate::panic_guard::run_guarded("extract_office_images", || {
+        extract_office_images(&path, &ExtractOptions::default())
+    })
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_media_path_recognizes_pptx_docx_xlsx() {
+        assert!(is_media_path("ppt/media/image1.png"));
+        assert!(is_media_path("word/media/image2.jpeg"));
+        assert!(is_media_path("xl/media/image3.gif"));
+        assert!(!is_media_path("ppt/slides/slide1.xml"));
+        assert!(!is_media_path("word/document.xml"));
+        assert!(!is_media_path("docProps/thumbnail.jpeg"));
+    }
+
+    #[test]
+    fn guess_mime_from_name_covers_common_formats() {
+        assert_eq!(
+            guess_mime_from_name("ppt/media/image1.PNG"),
+            Some("image/png".to_string())
+        );
+        assert_eq!(
+            guess_mime_from_name("word/media/image2.jpeg"),
+            Some("image/jpeg".to_string())
+        );
+        assert_eq!(
+            guess_mime_from_name("ppt/media/image3.jpg"),
+            Some("image/jpeg".to_string())
+        );
+        // Vector formats deliberately rejected — we don't rasterize
+        // SVG/EMF/WMF in this phase, surfacing them as strings would
+        // mislead the caption pipeline.
+        assert_eq!(guess_mime_from_name("ppt/media/foo.svg"), None);
+        assert_eq!(guess_mime_from_name("ppt/media/foo.emf"), None);
+    }
+
+    #[test]
+    fn sha256_hex_is_deterministic_and_64_chars() {
+        let h1 = sha256_hex(b"hello world");
+        let h2 = sha256_hex(b"hello world");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+        // Known SHA-256 of "hello world".
+        assert_eq!(
+            h1,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn extract_options_defaults_match_plan() {
+        // Plan documents 100×100 / 500 as the v1 defaults. Pinning
+        // these here so a casual change is visible.
+        let o = ExtractOptions::default();
+        assert_eq!(o.min_width, 100);
+        assert_eq!(o.min_height, 100);
+        assert_eq!(o.max_images, 500);
+    }
+}

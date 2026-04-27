@@ -66,6 +66,8 @@ pub fn run() {
             commands::claude_cli::claude_cli_detect,
             commands::claude_cli::claude_cli_spawn,
             commands::claude_cli::claude_cli_kill,
+            commands::extract_images::extract_pdf_images_cmd,
+            commands::extract_images::extract_office_images_cmd,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

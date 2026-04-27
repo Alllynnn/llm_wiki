@@ -246,7 +246,7 @@ fn pdfium_candidate_paths() -> Vec<String> {
     v
 }
 
-fn pdfium() -> Result<&'static pdfium_render::prelude::Pdfium, String> {
+pub(crate) fn pdfium() -> Result<&'static pdfium_render::prelude::Pdfium, String> {
     PDFIUM
         .get_or_init(|| {
             use pdfium_render::prelude::*;
