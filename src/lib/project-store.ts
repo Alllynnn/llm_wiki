@@ -115,6 +115,16 @@ export async function removeFromRecentProjects(
   const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
   const updated = existing.filter((p) => p.path !== path)
   await store.set(RECENT_PROJECTS_KEY, updated)
+  // ALSO clear the last-project pointer if it points at the project
+  // we just removed. Without this, App.tsx's startup auto-open
+  // (`getLastProject()` → `openProject()` → `saveLastProject()`)
+  // re-adds the removed entry back to recents on the next launch,
+  // making the delete look like it didn't take. Reported by user
+  // as "deleted project comes back after restart."
+  const last = await store.get<WikiProject>(LAST_PROJECT_KEY)
+  if (last && last.path === path) {
+    await store.delete(LAST_PROJECT_KEY)
+  }
 }
 
 const LANGUAGE_KEY = "language"
