@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import { convertFileSrc } from "@tauri-apps/api/core"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -17,6 +17,8 @@ import { getFileCategory, getCodeLanguage } from "@/lib/file-types"
 import type { FileCategory } from "@/lib/file-types"
 import { getFileName } from "@/lib/path-utils"
 import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
+import { parseFrontmatter } from "@/lib/frontmatter"
+import { FrontmatterPanel } from "@/components/editor/frontmatter-panel"
 import { useWikiStore } from "@/stores/wiki-store"
 
 interface FilePreviewProps {
@@ -119,6 +121,8 @@ function TextPreview({ filePath, content, label }: { filePath: string; content: 
   const setPendingScrollImageSrc = useWikiStore((s) => s.setPendingScrollImageSrc)
   const scrollRootRef = useRef<HTMLDivElement | null>(null)
 
+  const { frontmatter, body } = useMemo(() => parseFrontmatter(content), [content])
+
   // Consume `pendingScrollImageSrc` once the file has rendered.
   // We re-scan the DOM whenever:
   //   - file content changes (different page just loaded), OR
@@ -179,6 +183,7 @@ function TextPreview({ filePath, content, label }: { filePath: string; content: 
         <span>{filePath}</span>
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase">{label}</span>
       </div>
+      {frontmatter && <FrontmatterPanel data={frontmatter} />}
       <div className="prose prose-sm max-w-none dark:prose-invert">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
@@ -220,7 +225,7 @@ function TextPreview({ filePath, content, label }: { filePath: string; content: 
             ),
           }}
         >
-          {content}
+          {body}
         </ReactMarkdown>
       </div>
     </div>
