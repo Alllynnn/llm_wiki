@@ -18,6 +18,7 @@ import type { FileNode } from "@/types/wiki"
 import { convertLatexToUnicode } from "@/lib/latex-to-unicode"
 import { normalizePath, getFileName } from "@/lib/path-utils"
 import { makeQueryFileName } from "@/lib/wiki-filename"
+import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
 import { findRawSourceForImage, imageUrlToAbsolute } from "@/lib/raw-source-resolver"
 
@@ -231,7 +232,7 @@ function SaveToWikiButton({ content, visible }: { content: string; visible: bool
 
       // Full auto-ingest: extract entities, concepts, cross-references from saved content
       const llmConfig = useWikiStore.getState().llmConfig
-      if (llmConfig.apiKey || llmConfig.provider === "ollama") {
+      if (hasUsableLlm(llmConfig)) {
         const { autoIngest } = await import("@/lib/ingest")
         autoIngest(pp, filePath, llmConfig).catch((err) =>
           console.error("Failed to auto-ingest saved query:", err)

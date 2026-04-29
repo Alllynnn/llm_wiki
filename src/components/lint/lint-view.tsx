@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { runStructuralLint, runSemanticLint, type LintResult } from "@/lib/lint"
+import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { readFile, writeFile, listDirectory } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
 
@@ -49,7 +50,7 @@ export function LintView() {
       const structural = await runStructuralLint(pp)
       let all = structural
 
-      if (runSemantic && (llmConfig.apiKey || llmConfig.provider === "ollama")) {
+      if (runSemantic && hasUsableLlm(llmConfig)) {
         const semantic = await runSemanticLint(pp, llmConfig)
         all = [...structural, ...semantic]
       }

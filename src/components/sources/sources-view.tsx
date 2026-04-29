@@ -8,6 +8,7 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { copyFile, listDirectory, readFile, writeFile, deleteFile, findRelatedWikiPages, preprocessFile } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { enqueueIngest, enqueueBatch } from "@/lib/ingest-queue"
+import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { useTranslation } from "react-i18next"
 import { normalizePath, getFileName } from "@/lib/path-utils"
 import {
@@ -139,7 +140,7 @@ export function SourcesView() {
     await loadSources()
 
     // Enqueue for serial ingest (runs in background via ingest queue)
-    if (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom") {
+    if (hasUsableLlm(llmConfig)) {
       for (const destPath of importedPaths) {
         enqueueIngest(project.id, destPath).catch((err) =>
           console.error(`Failed to enqueue ingest:`, err)
@@ -181,7 +182,7 @@ export function SourcesView() {
       await loadSources()
 
       // Build ingest tasks with folder context
-      if (llmConfig.apiKey || llmConfig.provider === "ollama" || llmConfig.provider === "custom") {
+      if (hasUsableLlm(llmConfig)) {
         const tasks = copiedFiles
           .filter((fp) => {
             const ext = fp.split(".").pop()?.toLowerCase() ?? ""
