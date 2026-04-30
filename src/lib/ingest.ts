@@ -8,6 +8,7 @@ import { useReviewStore, type ReviewItem } from "@/stores/review-store"
 import { getFileName, normalizePath } from "@/lib/path-utils"
 import { checkIngestCache, saveIngestCache } from "@/lib/ingest-cache"
 import { sanitizeIngestedFileContent } from "@/lib/ingest-sanitize"
+import { mergePageContent, type MergeFn } from "@/lib/page-merge"
 import { withProjectLock } from "@/lib/project-mutex"
 import {
   extractAndSaveSourceImages,
@@ -593,7 +594,13 @@ async function autoIngestImpl(
 
   // ── Step 3: Write files ───────────────────────────────────────
   activity.updateItem(activityId, { detail: "Writing files..." })
-  const { writtenPaths, warnings: writeWarnings, hardFailures } = await writeFileBlocks(pp, generation)
+  const { writtenPaths, warnings: writeWarnings, hardFailures } = await writeFileBlocks(
+    pp,
+    generation,
+    llmConfig,
+    fileName,
+    signal,
+  )
 
   // Surface parser / writer warnings to the activity panel so users
   // don't have to open devtools to find out a block was dropped.
@@ -755,6 +762,9 @@ function contentMatchesTargetLanguage(content: string, target: string): boolean 
 async function writeFileBlocks(
   projectPath: string,
   text: string,
+  llmConfig: LlmConfig,
+  sourceFileName: string,
+  signal?: AbortSignal,
 ): Promise<{ writtenPaths: string[]; warnings: string[]; hardFailures: string[] }> {
   const { blocks, warnings: parseWarnings } = parseFileBlocks(text)
   const warnings = [...parseWarnings]
@@ -829,19 +839,32 @@ async function writeFileBlocks(
         await writeFile(fullPath, content)
       } else {
         // Content pages (entities / concepts / queries / synthesis /
-        // comparisons / sources summaries): MERGE the sources field
-        // with what's already on disk before overwriting, so pages
-        // that multiple source documents contribute to retain the
-        // full `sources: [...]` history. Without this, every
-        // re-ingest clobbers sources to a single entry and the
-        // source-delete flow would later treat the page as single-
-        // sourced and delete it outright — silent data loss.
-        //
-        // See src/lib/sources-merge.ts for the merge semantics
-        // (case-insensitive dedup, preserves existing order).
-        const { mergeSourcesIntoContent } = await import("./sources-merge")
+        // comparisons / sources summaries): if a page with this
+        // path already exists on disk, merge old + new instead of
+        // clobbering. The merge has three layers:
+        //   1. Frontmatter array fields (sources, tags, related)
+        //      are union-merged at the application layer.
+        //   2. If body content differs, an LLM call produces a
+        //      coherent merged body — preserves contributions from
+        //      every source document.
+        //   3. Locked frontmatter fields (type, title, created)
+        //      are forced back to the existing values; updated is
+        //      stamped today.
+        // LLM failure / sanity rejection falls back to "incoming
+        // body + array-field union" with a best-effort backup.
+        // See page-merge.ts.
         const existing = await tryReadFile(fullPath)
-        const toWrite = mergeSourcesIntoContent(content, existing)
+        const toWrite = await mergePageContent(
+          content,
+          existing || null,
+          buildPageMerger(llmConfig),
+          {
+            sourceFileName,
+            pagePath: relativePath,
+            signal,
+            backup: (oldContent) => backupExistingPage(projectPath, relativePath, oldContent),
+          },
+        )
         await writeFile(fullPath, toWrite)
       }
       writtenPaths.push(relativePath)
@@ -1127,6 +1150,101 @@ async function tryReadFile(path: string): Promise<string> {
   } catch {
     return ""
   }
+}
+
+/**
+ * Build a MergeFn for a given LLM config. The returned function asks
+ * the model to merge two versions of the same wiki page into one.
+ * Page-merge.ts handles all the sanity-checking and fallback paths;
+ * this is just the "stream the LLM" wrapper.
+ */
+function buildPageMerger(llmConfig: LlmConfig): MergeFn {
+  return async (existingContent, incomingContent, sourceFileName, signal) => {
+    const systemPrompt = [
+      "You are merging two versions of the same wiki page into one coherent document.",
+      "Both versions describe the same entity / concept; one is already on disk,",
+      "the other was just generated from a different source document.",
+      "",
+      "Output ONE merged version that:",
+      "- Preserves every factual claim from both versions (do not drop content)",
+      "- Eliminates redundancy when both versions state the same fact",
+      "- Reorganizes sections so the structure is logical for the merged topic,",
+      "  not just a concatenation of the two inputs",
+      "- Uses consistent markdown structure (headings, tables, lists, callouts)",
+      "- Keeps `[[wikilink]]` references intact",
+      "",
+      "Output requirements:",
+      "- The FIRST character of your response MUST be `-` (the opening of `---`)",
+      "- Output the COMPLETE file: YAML frontmatter + body",
+      "- No preamble (no \"Here is the merged version:\"), no analysis prose",
+      "- The caller will overwrite `sources`/`tags`/`related`/`updated` with",
+      "  deterministic values — your job is the body and any other fields",
+    ].join("\n")
+
+    const userMessage = [
+      `## Existing version on disk`,
+      "",
+      existingContent,
+      "",
+      "---",
+      "",
+      `## Newly generated version (from ${sourceFileName})`,
+      "",
+      incomingContent,
+      "",
+      "---",
+      "",
+      "Now output the merged file. Start with `---` on the first line.",
+    ].join("\n")
+
+    let result = ""
+    let streamError: Error | null = null
+    await new Promise<void>((resolve) => {
+      streamChat(
+        llmConfig,
+        [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        {
+          onToken: (token) => {
+            result += token
+          },
+          onDone: () => resolve(),
+          onError: (err) => {
+            streamError = err
+            resolve()
+          },
+        },
+        signal,
+        { temperature: 0.1 },
+      ).catch((err) => {
+        // Defensive: streamChat returns a Promise<void>; if it rejects
+        // (instead of going through onError), surface that too.
+        streamError = err instanceof Error ? err : new Error(String(err))
+        resolve()
+      })
+    })
+    if (streamError) throw streamError
+    return result
+  }
+}
+
+/**
+ * Best-effort snapshot of a page before a fallback merge overwrites
+ * it. Saved to `.llm-wiki/page-history/<sanitized-path>-<timestamp>.md`
+ * so a user who later notices content lost in a merge can recover it.
+ * Errors are swallowed by the caller (page-merge's tryBackup).
+ */
+async function backupExistingPage(
+  projectPath: string,
+  relativePath: string,
+  existingContent: string,
+): Promise<void> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+  const sanitized = relativePath.replace(/[/\\]/g, "_")
+  const backupPath = `${projectPath}/.llm-wiki/page-history/${sanitized}-${stamp}`
+  await writeFile(backupPath, existingContent)
 }
 
 /**
