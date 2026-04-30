@@ -496,6 +496,18 @@ function ClaudeCliStatusPill() {
                   {result.path}
                 </div>
               )}
+              {/* `claude --version` doesn't validate OAuth, so even a
+                  green pill can hide an expired login. Surface the
+                  remediation up front so users don't mis-diagnose
+                  the resulting "Unauthenticated" exit-1 as a LLM
+                  Wiki bug. */}
+              <div className="text-muted-foreground">
+                If chat fails with an authentication error, run{" "}
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                  claude
+                </code>{" "}
+                in a terminal to refresh the OAuth login.
+              </div>
             </>
           )}
           {state === "err" && (
