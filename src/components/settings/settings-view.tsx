@@ -79,7 +79,7 @@ function initialDraft(
   maxHistoryMessages: number,
   uiLanguage: string,
   projectPath?: string,
-  projectFileSyncEnabled: boolean,
+  projectFileSyncEnabled: boolean = true,
 ): SettingsDraft {
   // Show absolute path: if stored path is empty, show default using project path
   // If stored path is relative (legacy), prepend project path
@@ -140,7 +140,6 @@ export function SettingsView() {
   const setMultimodalConfig = useWikiStore((s) => s.setMultimodalConfig)
   const outputLanguage = useWikiStore((s) => s.outputLanguage)
   const setOutputLanguage = useWikiStore((s) => s.setOutputLanguage)
-  const project = useWikiStore((s) => s.project)
   const proxyConfig = useWikiStore((s) => s.proxyConfig)
   const setProxyConfig = useWikiStore((s) => s.setProxyConfig)
   const scheduledImportConfig = useWikiStore((s) => s.scheduledImportConfig)
