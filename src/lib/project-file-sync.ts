@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
-import { readFile, listDirectory, getFileSize } from "@/commands/fs"
+import { readFile, listDirectory } from "@/commands/fs"
 import {
   startProjectFileWatcher,
   stopProjectFileWatcher,
@@ -156,19 +156,7 @@ async function enqueueRawSourceChanges(project: WikiProject, tasks: FileChangeTa
     .map((task) => task.path)
     .filter(isIngestableRawSource)
 
-  const paths: string[] = []
-  const maxBytes = config.maxFileSizeMb * 1024 * 1024
-  for (const rel of candidates) {
-    if (!isPathAllowedBySourceWatch(rel, config)) continue
-    try {
-      const size = await getFileSize(`${normalizePath(project.path)}/${rel}`)
-      if (size > maxBytes) continue
-    } catch (err) {
-      console.warn("[file-sync] failed to inspect changed source file:", err)
-      continue
-    }
-    paths.push(rel)
-  }
+  const paths = candidates.filter((rel) => isPathAllowedBySourceWatch(rel, config))
 
   if (paths.length === 0) return
 

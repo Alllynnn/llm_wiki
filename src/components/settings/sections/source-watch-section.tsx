@@ -181,10 +181,39 @@ export function SourceWatchSection({ draft, setDraft, projectReady }: Props) {
           <textarea
             value={joinList(config.excludeDirs)}
             onChange={(event) => updateConfig({ excludeDirs: updateListValue(event.target.value) })}
+            placeholder={t("settings.sections.sourceWatch.excludeDirsPlaceholder", {
+              defaultValue: ".git, node_modules, drafts, subdir/drafts",
+            })}
             disabled={!projectReady || !config.enabled}
             rows={2}
             className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
           />
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {t("settings.sections.sourceWatch.excludeDirsHint", {
+              defaultValue: "Folder names match any path segment. Paths such as subdir/drafts match that nested folder.",
+            })}
+          </p>
+        </label>
+
+        <label className="block space-y-1.5">
+          <span className="text-xs font-medium">
+            {t("settings.sections.sourceWatch.excludeExtensions", { defaultValue: "Excluded file extensions" })}
+          </span>
+          <textarea
+            value={joinList(config.excludeExtensions)}
+            onChange={(event) => updateConfig({ excludeExtensions: updateListValue(event.target.value) })}
+            placeholder={t("settings.sections.sourceWatch.excludeExtensionsPlaceholder", {
+              defaultValue: "tmp, bak, exe, dll, iso, dmg",
+            })}
+            disabled={!projectReady || !config.enabled}
+            rows={2}
+            className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
+          />
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {t("settings.sections.sourceWatch.excludeExtensionsHint", {
+              defaultValue: "Use extensions without dots. These override the allowed file type checkboxes.",
+            })}
+          </p>
         </label>
 
         <label className="block space-y-1.5">

@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Read;
 use std::panic::AssertUnwindSafe;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -24,10 +25,12 @@ const MAX_RETRY_COUNT: u32 = 3;
 const APP_WRITE_IGNORE_MS: i64 = 4_000;
 const QUEUE_EMIT_EVERY: usize = 25;
 const LINUX_RESCAN_INTERVAL_MS: i64 = 10_000;
-const DEFAULT_SOURCE_WATCH_MAX_MB: u64 = 100;
+const DEFAULT_SOURCE_WATCH_CONFIG_JSON: &str =
+    include_str!("../../../src/lib/source-watch-defaults.json");
 
 static QUEUE_LOCKS: OnceLock<Mutex<BTreeMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 static APP_WRITE_IGNORES: OnceLock<Mutex<BTreeMap<String, i64>>> = OnceLock::new();
+static WATCHER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 pub struct FileSyncState {
@@ -104,65 +107,59 @@ pub struct FileChangeQueue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceWatchConfig {
+    #[serde(default = "default_source_watch_enabled")]
     enabled: bool,
+    #[serde(default = "default_source_watch_auto_ingest")]
     auto_ingest: bool,
+    #[serde(default = "default_source_watch_include_extensions")]
     include_extensions: Vec<String>,
+    #[serde(default = "default_source_watch_exclude_extensions")]
     exclude_extensions: Vec<String>,
+    #[serde(default = "default_source_watch_exclude_dirs")]
     exclude_dirs: Vec<String>,
+    #[serde(default = "default_source_watch_exclude_globs")]
     exclude_globs: Vec<String>,
+    #[serde(default = "default_source_watch_max_file_size_mb")]
     max_file_size_mb: u64,
 }
 
 impl Default for SourceWatchConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            auto_ingest: true,
-            include_extensions: [
-                "md", "mdx", "txt", "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx",
-                "rtf", "html", "htm", "csv",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            exclude_extensions: [
-                "tmp",
-                "temp",
-                "bak",
-                "swp",
-                "part",
-                "partial",
-                "crdownload",
-                "exe",
-                "dll",
-                "so",
-                "dylib",
-                "bin",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            exclude_dirs: [
-                ".git",
-                ".svn",
-                ".hg",
-                ".obsidian",
-                ".idea",
-                ".vscode",
-                "node_modules",
-                ".cache",
-                "__pycache__",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            exclude_globs: ["~$*", ".~lock.*#", "*.draft.*", "draft-*", "*.private.*"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            max_file_size_mb: DEFAULT_SOURCE_WATCH_MAX_MB,
-        }
+        serde_json::from_str(DEFAULT_SOURCE_WATCH_CONFIG_JSON)
+            .expect("source-watch-defaults.json must match SourceWatchConfig")
     }
+}
+
+fn default_source_watch_config() -> SourceWatchConfig {
+    SourceWatchConfig::default()
+}
+
+fn default_source_watch_enabled() -> bool {
+    default_source_watch_config().enabled
+}
+
+fn default_source_watch_auto_ingest() -> bool {
+    default_source_watch_config().auto_ingest
+}
+
+fn default_source_watch_include_extensions() -> Vec<String> {
+    default_source_watch_config().include_extensions
+}
+
+fn default_source_watch_exclude_extensions() -> Vec<String> {
+    default_source_watch_config().exclude_extensions
+}
+
+fn default_source_watch_exclude_dirs() -> Vec<String> {
+    default_source_watch_config().exclude_dirs
+}
+
+fn default_source_watch_exclude_globs() -> Vec<String> {
+    default_source_watch_config().exclude_globs
+}
+
+fn default_source_watch_max_file_size_mb() -> u64 {
+    default_source_watch_config().max_file_size_mb
 }
 
 fn normalize_source_watch_config(config: Option<SourceWatchConfig>) -> SourceWatchConfig {
@@ -193,6 +190,7 @@ pub fn start_project_file_watcher(
     run_guarded("start_project_file_watcher", || {
         let root = PathBuf::from(project_path);
         let source_watch_config = normalize_source_watch_config(source_watch_config);
+        let watcher_generation = WATCHER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         ensure_sync_dir(&root)?;
         with_queue_lock(&root, || reset_processing_tasks(&root, &project_id))?;
         enqueue_rescan_changes(&root, &project_id, &source_watch_config)?;
@@ -221,6 +219,7 @@ pub fn start_project_file_watcher(
                                 &root_for_thread,
                                 &project_for_thread,
                                 &config_for_thread,
+                                watcher_generation,
                                 &mut last_periodic_rescan,
                             );
                             continue;
@@ -233,6 +232,7 @@ pub fn start_project_file_watcher(
                                 &root_for_thread,
                                 &project_for_thread,
                                 &config_for_thread,
+                                watcher_generation,
                                 paths,
                             )
                         }));
@@ -246,6 +246,7 @@ pub fn start_project_file_watcher(
                             &root_for_thread,
                             &project_for_thread,
                             &config_for_thread,
+                            watcher_generation,
                             &mut last_periodic_rescan,
                         );
                     }
@@ -308,6 +309,7 @@ pub fn start_project_file_watcher(
 #[tauri::command]
 pub fn stop_project_file_watcher(state: State<FileSyncState>) -> Result<(), String> {
     run_guarded("stop_project_file_watcher", || {
+        WATCHER_GENERATION.fetch_add(1, Ordering::SeqCst);
         let mut inner = state.inner.lock().map_err(|_| "file sync state poisoned")?;
         inner.watcher = None;
         inner.project_id = None;
@@ -411,28 +413,33 @@ fn handle_changed_paths(
     root: &Path,
     project_id: &str,
     source_watch_config: &SourceWatchConfig,
+    watcher_generation: u64,
     paths: Vec<PathBuf>,
 ) -> Result<(), String> {
+    if !is_active_watcher_generation(watcher_generation) {
+        return Ok(());
+    }
+    let rules = SourceWatchRules::new(source_watch_config);
     let mut rels = BTreeSet::<String>::new();
     let mut app_written_rels = BTreeSet::<String>::new();
     let snapshot = with_queue_lock(root, || read_snapshot(root))?;
     for path in paths {
         if is_app_write_ignored(&path) {
-            collect_known_paths(root, &path, &snapshot, &mut app_written_rels, source_watch_config);
+            collect_known_paths(root, &path, &snapshot, &mut app_written_rels, &rules);
             continue;
         }
         if path.is_dir() {
             for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
                 if entry.file_type().is_file() && !is_app_write_ignored(entry.path()) {
-                    if let Some(rel) = relative_watch_path(root, entry.path(), source_watch_config) {
+                    if let Some(rel) = relative_watch_path(root, entry.path(), &rules, entry.metadata().ok().map(|m| m.len())) {
                         rels.insert(rel);
                     }
                 }
             }
-        } else if let Some(rel) = relative_watch_path(root, &path, source_watch_config) {
+        } else if let Some(rel) = relative_watch_path(root, &path, &rules, None) {
             rels.insert(rel);
         } else if !path.exists() {
-            collect_known_paths(root, &path, &snapshot, &mut rels, source_watch_config);
+            collect_known_paths(root, &path, &snapshot, &mut rels, &rules);
         }
     }
     if !app_written_rels.is_empty() {
@@ -441,9 +448,18 @@ fn handle_changed_paths(
     if rels.is_empty() {
         return Ok(());
     }
+    if !is_active_watcher_generation(watcher_generation) {
+        return Ok(());
+    }
     enqueue_paths(root, project_id, rels)?;
+    if !is_active_watcher_generation(watcher_generation) {
+        return Ok(());
+    }
     process_queue(app, root, project_id)?;
     let queue = with_queue_lock(root, || read_queue(root))?;
+    if !is_active_watcher_generation(watcher_generation) {
+        return Ok(());
+    }
     emit_queue(app, project_id, &queue);
     Ok(())
 }
@@ -453,6 +469,7 @@ fn maybe_periodic_rescan(
     root: &Path,
     project_id: &str,
     source_watch_config: &SourceWatchConfig,
+    watcher_generation: u64,
     last_periodic_rescan: &mut i64,
 ) {
     if !cfg!(target_os = "linux") || now_ms() - *last_periodic_rescan < LINUX_RESCAN_INTERVAL_MS {
@@ -460,7 +477,7 @@ fn maybe_periodic_rescan(
     }
     *last_periodic_rescan = now_ms();
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        rescan_watch_roots(app, root, project_id, source_watch_config)
+        rescan_watch_roots(app, root, project_id, source_watch_config, watcher_generation)
     }));
     match result {
         Ok(Ok(())) => {}
@@ -474,17 +491,31 @@ fn rescan_watch_roots(
     root: &Path,
     project_id: &str,
     source_watch_config: &SourceWatchConfig,
+    watcher_generation: u64,
 ) -> Result<(), String> {
+    if !is_active_watcher_generation(watcher_generation) {
+        return Ok(());
+    }
     enqueue_rescan_changes_for_prefixes(
         root,
         project_id,
         &["raw/sources", "wiki", "purpose.md", "schema.md"],
         source_watch_config,
     )?;
+    if !is_active_watcher_generation(watcher_generation) {
+        return Ok(());
+    }
     process_queue(app, root, project_id)?;
     let queue = with_queue_lock(root, || read_queue(root))?;
+    if !is_active_watcher_generation(watcher_generation) {
+        return Ok(());
+    }
     emit_queue(app, project_id, &queue);
     Ok(())
+}
+
+fn is_active_watcher_generation(generation: u64) -> bool {
+    WATCHER_GENERATION.load(Ordering::SeqCst) == generation
 }
 
 fn collect_known_paths(
@@ -492,12 +523,12 @@ fn collect_known_paths(
     path: &Path,
     snapshot: &FileSnapshot,
     rels: &mut BTreeSet<String>,
-    source_watch_config: &SourceWatchConfig,
+    rules: &SourceWatchRules,
 ) {
     if path.is_dir() {
         for entry in WalkDir::new(path).into_iter().filter_map(Result::ok) {
             if entry.file_type().is_file() {
-                if let Some(rel) = relative_watch_path(root, entry.path(), source_watch_config) {
+                if let Some(rel) = relative_watch_path(root, entry.path(), rules, entry.metadata().ok().map(|m| m.len())) {
                     rels.insert(rel);
                 }
             }
@@ -520,7 +551,7 @@ fn collect_known_paths(
         return;
     }
 
-    if should_watch_rel(&rel, source_watch_config) {
+    if should_watch_rel(&rel, rules) {
         rels.insert(rel);
     }
 }
@@ -554,10 +585,11 @@ fn enqueue_rescan_changes(
     project_id: &str,
     source_watch_config: &SourceWatchConfig,
 ) -> Result<(), String> {
+    let rules = SourceWatchRules::new(source_watch_config);
     let mut rels = BTreeSet::<String>::new();
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
         if entry.file_type().is_file() {
-            if let Some(rel) = relative_watch_path(root, entry.path(), source_watch_config) {
+            if let Some(rel) = relative_watch_path(root, entry.path(), &rules, entry.metadata().ok().map(|m| m.len())) {
                 rels.insert(rel);
             }
         }
@@ -578,12 +610,13 @@ fn enqueue_rescan_changes_for_prefixes(
     prefixes: &[&str],
     source_watch_config: &SourceWatchConfig,
 ) -> Result<(), String> {
+    let rules = SourceWatchRules::new(source_watch_config);
     let mut rels = BTreeSet::<String>::new();
     let snapshot = with_queue_lock(root, || read_snapshot(root))?;
     for prefix in prefixes {
         let path = root.join(prefix);
         if path.is_file() {
-            if let Some(rel) = relative_watch_path(root, &path, source_watch_config) {
+            if let Some(rel) = relative_watch_path(root, &path, &rules, fs::metadata(&path).ok().map(|m| m.len())) {
                 let old = snapshot.files.get(&rel);
                 let fast = read_meta_fast(root, &rel)?;
                 if old.map(|m| (m.size, m.mtime_ms)) != fast.as_ref().map(|m| (m.size, m.mtime_ms)) {
@@ -593,7 +626,7 @@ fn enqueue_rescan_changes_for_prefixes(
         } else if path.exists() {
             for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
                 if entry.file_type().is_file() {
-                    if let Some(rel) = relative_watch_path(root, entry.path(), source_watch_config) {
+                    if let Some(rel) = relative_watch_path(root, entry.path(), &rules, entry.metadata().ok().map(|m| m.len())) {
                         let old = snapshot.files.get(&rel);
                         let fast = read_meta_fast(root, &rel)?;
                         if old.map(|m| (m.size, m.mtime_ms)) != fast.as_ref().map(|m| (m.size, m.mtime_ms)) {
@@ -941,15 +974,21 @@ fn md5_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn relative_watch_path(root: &Path, path: &Path, source_watch_config: &SourceWatchConfig) -> Option<String> {
+fn relative_watch_path(
+    root: &Path,
+    path: &Path,
+    rules: &SourceWatchRules,
+    size: Option<u64>,
+) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?;
     let rel = normalize_rel_path(rel)?;
-    if !should_watch_rel(&rel, source_watch_config) {
+    if !should_watch_rel(&rel, rules) {
         return None;
     }
     if rel.starts_with("raw/sources/") && path.exists() {
-        let max_bytes = source_watch_config.max_file_size_mb.saturating_mul(1024 * 1024);
-        if fs::metadata(path).ok()?.len() > max_bytes {
+        let max_bytes = rules.config.max_file_size_mb.saturating_mul(1024 * 1024);
+        let size = size.or_else(|| fs::metadata(path).ok().map(|m| m.len()))?;
+        if size > max_bytes {
             return None;
         }
     }
@@ -968,51 +1007,29 @@ fn normalize_rel_path(path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-fn should_watch_rel(rel: &str, source_watch_config: &SourceWatchConfig) -> bool {
+fn should_watch_rel(rel: &str, rules: &SourceWatchRules) -> bool {
     if rel.is_empty() {
         return false;
     }
     let lower = rel.to_lowercase();
     if lower.contains("/.llm-wiki/")
         || lower.starts_with(".llm-wiki/")
-        || lower.starts_with(".cache/")
-        || lower.starts_with(".obsidian/")
-        || lower.starts_with(".idea/")
-        || lower.starts_with(".vscode/")
         // App-managed generated media is intentionally ignored here. The
         // source markdown references drive graph/index refresh; media bytes
         // themselves are not analyzed by the wiki pipeline.
         || lower.starts_with("wiki/media/")
-        || lower.ends_with(".tmp")
-        || lower.ends_with(".swp")
-        || lower.ends_with('~')
         || lower.ends_with(".ds_store")
-        || lower.ends_with(".crdownload")
-        || lower.ends_with(".part")
-        || lower.ends_with(".partial")
     {
         return false;
     }
     let name = lower.rsplit('/').next().unwrap_or(&lower);
-    if name == "thumbs.db"
-        || name == "desktop.ini"
-        || name.starts_with("~$")
-        || (name.starts_with(".~lock.") && name.ends_with('#'))
-    {
+    if name == "thumbs.db" || name == "desktop.ini" {
         return false;
     }
-    let excluded_dirs = source_watch_config
-        .exclude_dirs
-        .iter()
-        .map(|dir| dir.to_lowercase())
-        .collect::<BTreeSet<_>>();
-    if lower
-        .split('/')
-        .any(|part| !part.is_empty() && excluded_dirs.contains(part))
-    {
+    if rules.matches_excluded_dir(&lower) {
         return false;
     }
-    if source_watch_config
+    if rules
         .exclude_globs
         .iter()
         .any(|pattern| wildcard_match(pattern, rel) || wildcard_match(pattern, name))
@@ -1022,19 +1039,12 @@ fn should_watch_rel(rel: &str, source_watch_config: &SourceWatchConfig) -> bool 
     if rel.starts_with("raw/sources/") {
         let ext = extension_of(name);
         if !ext.is_empty()
-            && source_watch_config
-                .exclude_extensions
-                .iter()
-                .any(|candidate| candidate == ext)
+            && rules.exclude_extensions.contains(ext)
         {
             return false;
         }
-        if !source_watch_config.include_extensions.is_empty()
-            && (ext.is_empty()
-                || !source_watch_config
-                    .include_extensions
-                    .iter()
-                    .any(|candidate| candidate == ext))
+        if !rules.include_extensions.is_empty()
+            && (ext.is_empty() || !rules.include_extensions.contains(ext))
         {
             return false;
         }
@@ -1043,6 +1053,47 @@ fn should_watch_rel(rel: &str, source_watch_config: &SourceWatchConfig) -> bool 
     rel == "purpose.md"
         || rel == "schema.md"
         || (rel.starts_with("wiki/") && rel.ends_with(".md"))
+}
+
+struct SourceWatchRules<'a> {
+    config: &'a SourceWatchConfig,
+    include_extensions: BTreeSet<String>,
+    exclude_extensions: BTreeSet<String>,
+    exclude_dirs: BTreeSet<String>,
+    exclude_globs: Vec<String>,
+}
+
+impl<'a> SourceWatchRules<'a> {
+    fn new(config: &'a SourceWatchConfig) -> Self {
+        Self {
+            config,
+            include_extensions: config.include_extensions.iter().cloned().collect(),
+            exclude_extensions: config.exclude_extensions.iter().cloned().collect(),
+            exclude_dirs: config
+                .exclude_dirs
+                .iter()
+                .map(|dir| normalize_rel_string(dir).to_lowercase())
+                .filter(|dir| !dir.is_empty())
+                .collect(),
+            exclude_globs: config.exclude_globs.iter().cloned().collect(),
+        }
+    }
+
+    fn matches_excluded_dir(&self, rel_lower: &str) -> bool {
+        self.exclude_dirs.iter().any(|dir| {
+            if dir.contains('/') {
+                rel_lower == dir
+                    || rel_lower.starts_with(&format!("{dir}/"))
+                    || rel_lower.contains(&format!("/{dir}/"))
+            } else {
+                rel_lower.split('/').any(|part| part == dir)
+            }
+        })
+    }
+}
+
+fn normalize_rel_string(value: &str) -> String {
+    value.replace('\\', "/").trim_matches('/').to_string()
 }
 
 fn extension_of(name: &str) -> &str {
@@ -1070,21 +1121,20 @@ fn normalize_string_list(values: Vec<String>) -> Vec<String> {
 }
 
 fn wildcard_match(pattern: &str, value: &str) -> bool {
-    wildcard_match_inner(
-        pattern.to_lowercase().as_bytes(),
-        value.to_lowercase().as_bytes(),
-    )
+    let pattern = pattern.to_lowercase().chars().collect::<Vec<_>>();
+    let value = value.to_lowercase().chars().collect::<Vec<_>>();
+    wildcard_match_inner(&pattern, &value)
 }
 
-fn wildcard_match_inner(pattern: &[u8], value: &[u8]) -> bool {
+fn wildcard_match_inner(pattern: &[char], value: &[char]) -> bool {
     let (mut p, mut v) = (0usize, 0usize);
     let mut star: Option<usize> = None;
     let mut match_after_star = 0usize;
     while v < value.len() {
-        if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == value[v]) {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == value[v]) {
             p += 1;
             v += 1;
-        } else if p < pattern.len() && pattern[p] == b'*' {
+        } else if p < pattern.len() && pattern[p] == '*' {
             star = Some(p);
             match_after_star = v;
             p += 1;
@@ -1096,7 +1146,7 @@ fn wildcard_match_inner(pattern: &[u8], value: &[u8]) -> bool {
             return false;
         }
     }
-    while p < pattern.len() && pattern[p] == b'*' {
+    while p < pattern.len() && pattern[p] == '*' {
         p += 1;
     }
     p == pattern.len()
@@ -1369,12 +1419,14 @@ mod tests {
 
         let mut rels = BTreeSet::new();
         let snapshot = read_snapshot(&root).unwrap();
+        let config = default_watch_config();
+        let rules = SourceWatchRules::new(&config);
         collect_known_paths(
             &root,
             &root.join("raw/sources/folder"),
             &snapshot,
             &mut rels,
-            &default_watch_config(),
+            &rules,
         );
 
         assert_eq!(rels, BTreeSet::from([a.to_string(), b.to_string()]));
@@ -1423,7 +1475,9 @@ mod tests {
         let mut app_written_rels = BTreeSet::new();
         let snapshot = read_snapshot(&root).unwrap();
         if is_app_write_ignored(&path) {
-            collect_known_paths(&root, &path, &snapshot, &mut app_written_rels, &default_watch_config());
+            let config = default_watch_config();
+            let rules = SourceWatchRules::new(&config);
+            collect_known_paths(&root, &path, &snapshot, &mut app_written_rels, &rules);
         }
         sync_snapshot_paths(&root, app_written_rels).unwrap();
 
@@ -1484,33 +1538,36 @@ mod tests {
     #[test]
     fn watch_rules_exclude_temporary_and_app_dirs() {
         let config = default_watch_config();
-        assert!(should_watch_rel("raw/sources/doc.md", &config));
-        assert!(should_watch_rel("wiki/concepts/topic.md", &config));
-        assert!(!should_watch_rel(".llm-wiki/file-change-queue.json", &config));
-        assert!(!should_watch_rel("raw/sources/~$Document.docx", &config));
-        assert!(!should_watch_rel("raw/sources/.~lock.Document.odt#", &config));
-        assert!(!should_watch_rel("raw/sources/Thumbs.db", &config));
-        assert!(!should_watch_rel("raw/sources/desktop.ini", &config));
-        assert!(!should_watch_rel("raw/sources/download.crdownload", &config));
-        assert!(!should_watch_rel(".vscode/settings.json", &config));
-        assert!(!should_watch_rel("wiki/media/image.png", &config));
+        let rules = SourceWatchRules::new(&config);
+        assert!(should_watch_rel("raw/sources/document.docx", &rules));
+        assert!(should_watch_rel("wiki/concepts/topic.md", &rules));
+        assert!(!should_watch_rel(".llm-wiki/file-change-queue.json", &rules));
+        assert!(!should_watch_rel("raw/sources/~$Document.docx", &rules));
+        assert!(!should_watch_rel("raw/sources/.~lock.Document.odt#", &rules));
+        assert!(!should_watch_rel("raw/sources/Thumbs.db", &rules));
+        assert!(!should_watch_rel("raw/sources/desktop.ini", &rules));
+        assert!(!should_watch_rel("raw/sources/download.crdownload", &rules));
+        assert!(!should_watch_rel(".vscode/settings.json", &rules));
+        assert!(!should_watch_rel("wiki/media/image.png", &rules));
     }
 
     #[test]
     fn source_watch_config_filters_raw_source_extensions_and_dirs() {
         let config = SourceWatchConfig {
             include_extensions: vec!["md".into(), "pdf".into()],
-            exclude_dirs: vec!["drafts".into()],
+            exclude_dirs: vec!["drafts".into(), "subdir/drafts".into()],
             exclude_globs: vec!["*.private.*".into()],
             ..SourceWatchConfig::default()
         };
         let config = normalize_source_watch_config(Some(config));
+        let rules = SourceWatchRules::new(&config);
 
-        assert!(should_watch_rel("raw/sources/final.md", &config));
-        assert!(!should_watch_rel("raw/sources/data.json", &config));
-        assert!(!should_watch_rel("raw/sources/drafts/final.md", &config));
-        assert!(!should_watch_rel("raw/sources/report.private.md", &config));
-        assert!(should_watch_rel("wiki/index.md", &config));
+        assert!(should_watch_rel("raw/sources/final.md", &rules));
+        assert!(!should_watch_rel("raw/sources/data.json", &rules));
+        assert!(!should_watch_rel("raw/sources/drafts/final.md", &rules));
+        assert!(!should_watch_rel("raw/sources/subdir/drafts/final.md", &rules));
+        assert!(!should_watch_rel("raw/sources/report.private.md", &rules));
+        assert!(should_watch_rel("wiki/index.md", &rules));
     }
 
     #[test]
@@ -1523,10 +1580,31 @@ mod tests {
             ..SourceWatchConfig::default()
         };
         let config = normalize_source_watch_config(Some(config));
+        let rules = SourceWatchRules::new(&config);
 
-        assert_eq!(relative_watch_path(&root, &root.join(rel), &config), None);
+        assert_eq!(relative_watch_path(&root, &root.join(rel), &rules, None), None);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_watch_defaults_are_loaded_from_shared_json_and_tolerate_missing_fields() {
+        let default = SourceWatchConfig::default();
+        assert!(default.include_extensions.contains(&"md".to_string()));
+        assert!(default.exclude_dirs.contains(&".git".to_string()));
+
+        let partial: SourceWatchConfig =
+            serde_json::from_str(r#"{"enabled":false,"includeExtensions":["md"]}"#).unwrap();
+        assert!(!partial.enabled);
+        assert!(partial.auto_ingest);
+        assert!(partial.exclude_dirs.contains(&".git".to_string()));
+    }
+
+    #[test]
+    fn wildcard_match_is_unicode_character_based() {
+        assert!(wildcard_match("?稿.md", "草稿.md"));
+        assert!(wildcard_match("草*.md", "草稿文件.md"));
+        assert!(!wildcard_match("??.md", "草稿文件.md"));
     }
 
     #[test]

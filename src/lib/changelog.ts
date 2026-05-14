@@ -26,6 +26,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.4.10",
+    date: "2026-05-14",
+    highlights: {
+      en: [
+        "Source folder monitoring now has configurable file type and exclusion rules. Existing projects should review Settings → Source Watch after upgrading because automatic ingest now defaults to common document formats only.",
+      ],
+      zh: [
+        "资料文件夹监控新增文件类型和排除规则配置。升级后建议到「设置 → 资料文件夹监控」检查配置；自动提取现在默认只纳入常见文档格式。",
+      ],
+    },
+  },
+  {
     version: "0.4.9",
     date: "2026-05-11",
     highlights: {

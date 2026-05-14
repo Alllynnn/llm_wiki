@@ -4,11 +4,17 @@ import {
   isPathAllowedBySourceWatch,
   normalizeSourceWatchConfig,
 } from "@/lib/source-watch-config"
+import sourceWatchDefaults from "@/lib/source-watch-defaults.json"
 
 describe("source watch config", () => {
+  it("uses the shared default fixture", () => {
+    expect(DEFAULT_SOURCE_WATCH_CONFIG).toEqual(sourceWatchDefaults)
+  })
+
   it("allows document types by default and rejects config/media/binaries", () => {
     expect(isPathAllowedBySourceWatch("raw/sources/report.pdf", DEFAULT_SOURCE_WATCH_CONFIG)).toBe(true)
     expect(isPathAllowedBySourceWatch("raw/sources/notes.md", DEFAULT_SOURCE_WATCH_CONFIG)).toBe(true)
+    expect(isPathAllowedBySourceWatch("raw/sources/report.doc", DEFAULT_SOURCE_WATCH_CONFIG)).toBe(false)
     expect(isPathAllowedBySourceWatch("raw/sources/secrets.json", DEFAULT_SOURCE_WATCH_CONFIG)).toBe(false)
     expect(isPathAllowedBySourceWatch("raw/sources/video.mp4", DEFAULT_SOURCE_WATCH_CONFIG)).toBe(false)
     expect(isPathAllowedBySourceWatch("raw/sources/tool.exe", DEFAULT_SOURCE_WATCH_CONFIG)).toBe(false)
@@ -23,6 +29,7 @@ describe("source watch config", () => {
 
     expect(isPathAllowedBySourceWatch("raw/sources/ready.md", config)).toBe(true)
     expect(isPathAllowedBySourceWatch("raw/sources/drafts/ready.md", config)).toBe(false)
+    expect(isPathAllowedBySourceWatch("raw/sources/subdir/drafts/ready.md", config)).toBe(false)
     expect(isPathAllowedBySourceWatch("raw/sources/.obsidian/index.md", config)).toBe(false)
     expect(isPathAllowedBySourceWatch("raw/sources/plan.private.md", config)).toBe(false)
     expect(isPathAllowedBySourceWatch("raw/sources/~$Document.docx", config)).toBe(false)

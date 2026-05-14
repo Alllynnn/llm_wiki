@@ -281,6 +281,11 @@
         "exclusions": "Exclusions and limits",
         "maxSize": "Maximum auto-ingest file size (MB)",
         "excludeDirs": "Excluded folders",
+        "excludeDirsPlaceholder": ".git, node_modules, drafts, subdir/drafts",
+        "excludeDirsHint": "Folder names match any path segment. Paths such as subdir/drafts match that nested folder.",
+        "excludeExtensions": "Excluded file extensions",
+        "excludeExtensionsPlaceholder": "tmp, bak, exe, dll, iso, dmg",
+        "excludeExtensionsHint": "Use extensions without dots. These override the allowed file type checkboxes.",
         "excludeGlobs": "Excluded filename patterns",
         "excludeGlobsHint": "Use comma-separated patterns such as *.draft.*, ~$*, .~lock.*#.",
         "groups": {
