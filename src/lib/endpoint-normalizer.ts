@@ -1,4 +1,4 @@
-import { isAzureOpenAiEndpoint } from "@/lib/llm-config-normalize"
+import { isAzureOpenAiEndpoint } from "@/lib/azure-openai"
 
 /**
  * Clean up user-entered LLM endpoint URLs. Catches the two most common

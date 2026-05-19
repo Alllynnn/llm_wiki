@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { buildAzureOpenAiUrl } from "./llm-config-normalize"
+import { buildAzureOpenAiUrl } from "./azure-openai"
 
 describe("buildAzureOpenAiUrl", () => {
   it("builds deployment chat URL with api-version", () => {

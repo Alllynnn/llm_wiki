@@ -1,5 +1,5 @@
 import type { LlmConfig } from "@/stores/wiki-store"
-import { isAzureOpenAiEndpoint } from "@/lib/llm-config-normalize"
+import { isAzureOpenAiEndpoint } from "@/lib/azure-openai"
 import { getProviderConfig, type RequestOverrides } from "./llm-providers"
 import { getHttpFetch, isFetchNetworkError } from "./tauri-fetch"
 import { countReasoningCharsInLine, extractReasoningTextFromLine } from "./reasoning-detector"

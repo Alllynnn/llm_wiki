@@ -9,7 +9,7 @@ import { LLM_PRESETS, type LlmPreset } from "../llm-presets"
 import { ContextSizeSelector } from "../context-size-selector"
 import { resolveConfig } from "../preset-resolver"
 import { normalizeEndpoint } from "@/lib/endpoint-normalizer"
-import { AZURE_OPENAI_API_VERSION } from "@/lib/llm-config-normalize"
+import { AZURE_OPENAI_API_VERSION } from "@/lib/azure-openai"
 
 export function LlmProviderSection() {
   const { t } = useTranslation()

@@ -3,7 +3,7 @@ import {
   AZURE_OPENAI_API_VERSION,
   buildAzureOpenAiUrl,
   isAzureOpenAiEndpoint,
-} from "@/lib/llm-config-normalize"
+} from "@/lib/azure-openai"
 
 /**
  * One piece of a multimodal message body. Text + image is the only

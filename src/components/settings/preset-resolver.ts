@@ -1,6 +1,6 @@
 import type { LlmConfig } from "@/stores/wiki-store"
 import type { ProviderOverride } from "@/stores/wiki-store"
-import { AZURE_OPENAI_API_VERSION } from "@/lib/llm-config-normalize"
+import { AZURE_OPENAI_API_VERSION } from "@/lib/azure-openai"
 import type { LlmPreset } from "./llm-presets"
 
 /**
