@@ -9,6 +9,7 @@ import { LLM_PRESETS, type LlmPreset } from "../llm-presets"
 import { ContextSizeSelector } from "../context-size-selector"
 import { resolveConfig } from "../preset-resolver"
 import { normalizeEndpoint } from "@/lib/endpoint-normalizer"
+import { AZURE_OPENAI_API_VERSION } from "@/lib/llm-config-normalize"
 
 export function LlmProviderSection() {
   const { t } = useTranslation()
@@ -117,7 +118,7 @@ function PresetRow({
   const apiKey = ov.apiKey ?? ""
   const apiMode = ov.apiMode ?? preset.apiMode ?? "chat_completions"
   const baseUrl = ov.baseUrl ?? preset.baseUrl ?? ""
-  const azureApiVersion = ov.azureApiVersion ?? preset.azureApiVersion ?? "2024-10-21"
+  const azureApiVersion = ov.azureApiVersion ?? preset.azureApiVersion ?? AZURE_OPENAI_API_VERSION
   const context = ov.maxContextSize ?? preset.suggestedContextSize ?? 131072
   const reasoning = ov.reasoning ?? { mode: "auto" as const }
   const hasConfig = !!apiKey || !!ov.baseUrl || !!ov.model || !!ov.azureApiVersion

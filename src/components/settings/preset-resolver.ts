@@ -1,5 +1,6 @@
 import type { LlmConfig } from "@/stores/wiki-store"
 import type { ProviderOverride } from "@/stores/wiki-store"
+import { AZURE_OPENAI_API_VERSION } from "@/lib/llm-config-normalize"
 import type { LlmPreset } from "./llm-presets"
 
 /**
@@ -51,7 +52,7 @@ export function resolveConfig(
       model,
       ollamaUrl: fallback.ollamaUrl,
       customEndpoint: ov.baseUrl ?? preset.baseUrl ?? "",
-      azureApiVersion: ov.azureApiVersion ?? preset.azureApiVersion ?? "2024-10-21",
+      azureApiVersion: ov.azureApiVersion ?? preset.azureApiVersion ?? AZURE_OPENAI_API_VERSION,
       maxContextSize,
       reasoning,
     }
