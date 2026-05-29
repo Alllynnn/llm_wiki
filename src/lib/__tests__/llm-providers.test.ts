@@ -32,7 +32,10 @@ function buildMiniMaxProviderConfig(config: LlmConfig) {
     buildBody: (messages: Array<{ role: string; content: string }>) => {
       const systemMessages = messages.filter((m) => m.role === "system")
       const conversationMessages = messages.filter((m) => m.role !== "system")
-      const system = systemMessages.map((m) => m.content).join("\n") || undefined
+      const systemText = systemMessages.map((m) => m.content).join("\n")
+      const system = systemText
+        ? [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }]
+        : undefined
       return {
         messages: conversationMessages,
         ...(system !== undefined ? { system } : {}),
@@ -96,13 +99,19 @@ describe("MiniMax Provider", () => {
     expect(body.model).toBe("MiniMax-M2.7")
   })
 
-  it("separates system messages from conversation (Anthropic convention)", () => {
+  it("separates system messages from conversation and marks the system prompt cacheable", () => {
     const cfg = buildMiniMaxProviderConfig(makeConfig())
     const body = cfg.buildBody([
       { role: "system", content: "You are helpful" },
       { role: "user", content: "Hello" },
     ]) as Record<string, unknown>
-    expect(body.system).toBe("You are helpful")
+    expect(body.system).toEqual([
+      {
+        type: "text",
+        text: "You are helpful",
+        cache_control: { type: "ephemeral" },
+      },
+    ])
     expect(body.messages).toEqual([{ role: "user", content: "Hello" }])
   })
 })

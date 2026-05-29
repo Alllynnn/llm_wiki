@@ -106,8 +106,32 @@ describe("Anthropic buildBody — vision content", () => {
     const body = getProviderConfig(cfg).buildBody([
       sys,
       { role: "user", content: "ok" },
-    ]) as { system?: string; messages: unknown[] }
-    expect(body.system).toBe("be terse")
+    ]) as { system?: unknown; messages: unknown[] }
+    expect(body.system).toEqual([
+      {
+        type: "text",
+        text: "be terse",
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+  })
+
+  it("emits Anthropic system prompts as cacheable text blocks", () => {
+    const cfg = mkConfig({ provider: "anthropic", model: "claude-3-5-sonnet-latest" })
+    const body = getProviderConfig(cfg).buildBody([
+      { role: "system", content: "You are helpful." },
+      { role: "system", content: "Prefer concise answers." },
+      { role: "user", content: "Hi" },
+    ]) as { system?: unknown; messages: unknown[] }
+
+    expect(body.system).toEqual([
+      {
+        type: "text",
+        text: "You are helpful.\nPrefer concise answers.",
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+    expect(body.messages).toEqual([{ role: "user", content: "Hi" }])
   })
 })
 
@@ -363,6 +387,29 @@ describe("reasoning controls", () => {
     expect(provider.url).toBe("https://token-plan-cn.xiaomimimo.com/anthropic/v1/messages")
     expect(provider.headers.Authorization).toBe("Bearer sk-mimo")
     expect(provider.headers["x-api-key"]).toBeUndefined()
+  })
+
+  it("uses cacheable system blocks for custom Anthropic-wire providers", () => {
+    const cfg = mkConfig({
+      provider: "custom",
+      apiKey: "sk-custom",
+      model: "custom-claude",
+      customEndpoint: "https://example.com/anthropic",
+      apiMode: "anthropic_messages",
+    })
+    const body = getProviderConfig(cfg).buildBody([
+      { role: "system", content: "Project-wide instruction." },
+      { role: "user", content: "Hi" },
+    ]) as { system?: unknown; messages: unknown[] }
+
+    expect(body.system).toEqual([
+      {
+        type: "text",
+        text: "Project-wide instruction.",
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+    expect(body.messages).toEqual([{ role: "user", content: "Hi" }])
   })
 
   it("disables Qwen3 thinking on OpenAI-compatible local endpoints", () => {

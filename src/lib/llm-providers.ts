@@ -371,11 +371,10 @@ function buildOpenAiCompatibleBody(
  * block, and uses a different shape than OpenAI for images
  * (`source.media_type` + `source.data` instead of a `data:` URL).
  *
- * For system messages, Anthropic accepts the top-level `system`
- * field as a string OR as a content-block array. We always
- * stringify system content here because every existing system-
- * prompt call site sends a string and the round-trip through
- * blocks is lossy.
+ * System messages are flattened separately into the top-level
+ * `system` field. Anthropic accepts that field as either a string or a
+ * text-block array; we use the block array form there so the system
+ * prompt can opt into prompt caching.
  */
 function toAnthropicContent(content: string | ContentBlock[]): unknown {
   if (typeof content === "string") return content
@@ -396,7 +395,7 @@ function toAnthropicContent(content: string | ContentBlock[]): unknown {
 }
 
 /**
- * Anthropic's top-level `system` field is a string, not blocks.
+ * Anthropic's top-level `system` field accepts a string or text blocks.
  * If a caller puts images inside a system message we drop them —
  * Anthropic doesn't accept system-level images today, and silently
  * losing them is the lesser evil compared to the request 400ing
@@ -409,6 +408,17 @@ function flattenAnthropicSystem(content: string | ContentBlock[]): string {
     .join("")
 }
 
+function buildAnthropicSystem(systemText: string): unknown[] | undefined {
+  if (!systemText) return undefined
+  return [
+    {
+      type: "text",
+      text: systemText,
+      cache_control: { type: "ephemeral" },
+    },
+  ]
+}
+
 function buildAnthropicBody(
   messages: ChatMessage[],
   overrides?: RequestOverrides,
@@ -417,9 +427,10 @@ function buildAnthropicBody(
   const conversationMessages = messages
     .filter((m) => m.role !== "system")
     .map((m) => ({ role: m.role, content: toAnthropicContent(m.content) }))
-  const system =
-    systemMessages.map((m) => flattenAnthropicSystem(m.content)).join("\n") ||
-    undefined
+  const systemText = systemMessages
+    .map((m) => flattenAnthropicSystem(m.content))
+    .join("\n")
+  const system = buildAnthropicSystem(systemText)
 
   // Anthropic Messages uses top_p / top_k (Python-style snake_case), a
   // mandatory `max_tokens`, and `stop_sequences` instead of `stop`.
