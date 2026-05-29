@@ -410,6 +410,9 @@ function flattenAnthropicSystem(content: string | ContentBlock[]): string {
 
 function buildAnthropicSystem(systemText: string): unknown[] | undefined {
   if (!systemText) return undefined
+  // Anthropic Messages wire only. OpenAI/Gemini-compatible providers
+  // use different system-prompt shapes and do not understand this
+  // cache_control marker.
   return [
     {
       type: "text",

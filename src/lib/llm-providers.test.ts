@@ -454,6 +454,27 @@ describe("reasoning controls", () => {
     expect(body.temperature).toBeUndefined()
   })
 
+  it("keeps cacheable system blocks when Anthropic extended thinking is enabled", () => {
+    const cfg = mkConfig({ provider: "anthropic", model: "claude-sonnet-4-5-20250929" })
+    const body = getProviderConfig(cfg).buildBody(
+      [
+        { role: "system", content: "Persistent project context." },
+        { role: "user", content: "hi" },
+      ],
+      { reasoning: { mode: "low" }, temperature: 0.1, max_tokens: 4096 },
+    ) as Record<string, unknown>
+
+    expect(body.system).toEqual([
+      {
+        type: "text",
+        text: "Persistent project context.",
+        cache_control: { type: "ephemeral" },
+      },
+    ])
+    expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 1024 })
+    expect(body.temperature).toBeUndefined()
+  })
+
   it("maps Gemini reasoning off to thinkingBudget 0", () => {
     const cfg = mkConfig({ provider: "google", model: "gemini-2.5-pro" })
     const body = getProviderConfig(cfg).buildBody(
