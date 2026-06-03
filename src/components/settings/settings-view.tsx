@@ -13,9 +13,11 @@ import {
   Clock,
   FolderSync,
   Server,
+  Settings,
 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { invoke } from "@tauri-apps/api/core"
+import { disable as disableAutostart, enable as enableAutostart } from "@tauri-apps/plugin-autostart"
 import i18n from "@/i18n"
 import { Button } from "@/components/ui/button"
 import { useWikiStore } from "@/stores/wiki-store"
@@ -35,11 +37,13 @@ import { NetworkSection } from "./sections/network-section"
 import { ScheduledImportSection } from "./sections/scheduled-import-section"
 import { SourceWatchSection } from "./sections/source-watch-section"
 import { ApiServerSection } from "./sections/api-server-section"
+import { GeneralSection } from "./sections/general-section"
 import { ChangelogSection } from "./sections/changelog-section"
 import { MaintenanceSection } from "./sections/maintenance-section"
 import { AboutSection } from "./sections/about-section"
 
 type CategoryId =
+  | "general"
   | "llm"
   | "embedding"
   | "multimodal"
@@ -64,6 +68,7 @@ interface Category {
 }
 
 const CATEGORIES: Category[] = [
+  { id: "general", labelKey: "settings.categories.general", icon: Settings },
   { id: "llm", labelKey: "settings.categories.llm", icon: Bot },
   { id: "embedding", labelKey: "settings.categories.embedding", icon: Binary },
   { id: "multimodal", labelKey: "settings.categories.multimodal", icon: ImageIcon },
@@ -88,6 +93,7 @@ function initialDraft(
   scheduledImport: ReturnType<typeof useWikiStore.getState>["scheduledImportConfig"],
   sourceWatch: ReturnType<typeof useWikiStore.getState>["sourceWatchConfig"],
   apiConfig: ReturnType<typeof useWikiStore.getState>["apiConfig"],
+  generalConfig: ReturnType<typeof useWikiStore.getState>["generalConfig"],
   maxHistoryMessages: number,
   uiLanguage: string,
   projectPath?: string,
@@ -146,6 +152,8 @@ function initialDraft(
     apiEnabled: apiConfig.enabled,
     apiAllowUnauthenticated: apiConfig.allowUnauthenticated,
     apiToken: apiConfig.token,
+    autostart: generalConfig.autostart,
+    closeBehavior: generalConfig.closeBehavior,
     uiLanguage,
     theme: theme ?? "system",
   }
@@ -170,6 +178,8 @@ export function SettingsView() {
   const setSourceWatchConfig = useWikiStore((s) => s.setSourceWatchConfig)
   const apiConfig = useWikiStore((s) => s.apiConfig)
   const setApiConfig = useWikiStore((s) => s.setApiConfig)
+  const generalConfig = useWikiStore((s) => s.generalConfig)
+  const setGeneralConfig = useWikiStore((s) => s.setGeneralConfig)
   const maxHistoryMessages = useChatStore((s) => s.maxHistoryMessages)
   const setMaxHistoryMessages = useChatStore((s) => s.setMaxHistoryMessages)
   // Drives the red dot next to the "About" row in the settings
@@ -195,6 +205,7 @@ export function SettingsView() {
       scheduledImportConfig,
       sourceWatchConfig,
       apiConfig,
+      generalConfig,
       maxHistoryMessages,
       i18n.language,
       project?.path,
@@ -248,6 +259,7 @@ export function SettingsView() {
         scheduledImportConfig,
         sourceWatchConfig,
         apiConfig,
+        generalConfig,
         maxHistoryMessages,
         prev.uiLanguage,
         project?.path,
@@ -263,6 +275,7 @@ export function SettingsView() {
     scheduledImportConfig,
     sourceWatchConfig,
     apiConfig,
+    generalConfig,
     maxHistoryMessages,
     project,
   ])
@@ -281,6 +294,7 @@ export function SettingsView() {
       saveScheduledImportConfig,
       saveSourceWatchConfig,
       saveApiConfig,
+      saveGeneralConfig,
     } = await import("@/lib/project-store")
 
     const newLlm = {
@@ -404,6 +418,27 @@ export function SettingsView() {
       console.warn("[api] failed to reload API server config cache:", err)
     }
 
+    const newGeneralConfig = {
+      autostart: draft.autostart,
+      closeBehavior: draft.closeBehavior,
+    }
+    setGeneralConfig(newGeneralConfig)
+    await saveGeneralConfig(newGeneralConfig)
+    try {
+      if (newGeneralConfig.autostart) {
+        await enableAutostart()
+      } else {
+        await disableAutostart()
+      }
+    } catch (err) {
+      console.warn("[general] failed to update autostart:", err)
+    }
+    try {
+      await invoke<string>("set_close_behavior", { value: newGeneralConfig.closeBehavior })
+    } catch (err) {
+      console.warn("[general] failed to update close behavior:", err)
+    }
+
     if (draft.uiLanguage !== i18n.language) {
       await i18n.changeLanguage(draft.uiLanguage)
       await saveLanguage(draft.uiLanguage)
@@ -429,6 +464,7 @@ export function SettingsView() {
     setScheduledImportConfig,
     setSourceWatchConfig,
     setApiConfig,
+    setGeneralConfig,
     scheduledImportConfig,
     setMaxHistoryMessages,
     outputLanguage,
@@ -437,6 +473,8 @@ export function SettingsView() {
 
   const body = useMemo(() => {
     switch (active) {
+      case "general":
+        return <GeneralSection draft={draft} setDraft={setDraft} />
       case "llm":
         // The LLM section manages its own store state (per-provider
         // configs + active preset) and persists directly — it bypasses

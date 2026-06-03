@@ -3,9 +3,14 @@ mod clip_server;
 mod commands;
 mod panic_guard;
 mod proxy;
+mod tray;
 mod types;
 
 use panic_guard::run_guarded;
+use std::sync::Mutex;
+use tauri::Manager;
+
+struct CloseBehaviorState(Mutex<String>);
 
 #[tauri::command]
 fn clip_server_status() -> String {
@@ -48,6 +53,32 @@ fn set_proxy_env(config: proxy::ProxyConfig) -> String {
     summary
 }
 
+#[tauri::command]
+fn set_close_behavior(
+    value: String,
+    state: tauri::State<'_, CloseBehaviorState>,
+) -> Result<String, String> {
+    let normalized = match value.as_str() {
+        "ask" | "minimize" | "exit" => value,
+        other => return Err(format!("Invalid close behavior: {other}")),
+    };
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "Close behavior state is unavailable".to_string())?;
+    *guard = normalized.clone();
+    Ok(normalized)
+}
+
+fn close_behavior<R: tauri::Runtime>(window: &tauri::Window<R>) -> String {
+    window
+        .state::<CloseBehaviorState>()
+        .0
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_else(|_| "ask".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     clip_server::start_clip_server();
@@ -56,6 +87,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None::<Vec<&str>>,
+        ))
         // Rust-backed fetch so third-party LLM APIs that reject
         // browser-origin headers via CORS preflight (MiniMax, Volcengine
         // Ark's api/coding/v3, etc.) still work. Requests leave the app
@@ -64,7 +99,6 @@ pub fn run() {
         .setup(|app| {
             // Let the PDF extractor find the bundled pdfium dynamic
             // library via Tauri's platform-correct resource path.
-            use tauri::Manager;
             if let Ok(dir) = app.path().resource_dir() {
                 commands::fs::set_resource_dir_hint(dir);
             }
@@ -93,6 +127,10 @@ pub fn run() {
             app.manage(commands::claude_cli::ClaudeCliState::default());
             app.manage(commands::codex_cli::CodexCliState::default());
             app.manage(commands::file_sync::FileSyncState::default());
+            app.manage(CloseBehaviorState(Mutex::new("ask".to_string())));
+            if let Err(err) = tray::create_tray(app.handle()) {
+                eprintln!("[tray] system tray unavailable, continuing without it: {err}");
+            }
             api_server::start_api_server(app.handle().clone());
             Ok(())
         })
@@ -146,34 +184,44 @@ pub fn run() {
             commands::file_sync::retry_file_change_task,
             commands::file_sync::ignore_file_change_task,
             set_proxy_env,
+            set_close_behavior,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = window.hide();
-                    api.prevent_close();
-                }
-
-                #[cfg(not(target_os = "macos"))]
-                {
-                    use tauri::Manager;
-                    api.prevent_close();
-                    let win = window.clone();
-                    let app = window.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        use tauri_plugin_dialog::DialogExt;
-                        let confirmed = app
-                            .dialog()
-                            .message("Are you sure you want to quit LLM Wiki?")
-                            .title("Confirm Exit")
-                            .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
-                            .blocking_show();
-
-                        if confirmed {
+                api.prevent_close();
+                let behavior = close_behavior(window);
+                let win = window.clone();
+                let app = window.app_handle().clone();
+                match behavior.as_str() {
+                    "exit" => {
+                        tauri::async_runtime::spawn(async move {
                             let _ = win.destroy();
-                        }
-                    });
+                            app.exit(0);
+                        });
+                    }
+                    "minimize" => {
+                        let _ = window.hide();
+                    }
+                    _ => {
+                        tauri::async_runtime::spawn(async move {
+                            use tauri_plugin_dialog::DialogExt;
+                            let confirmed = app
+                                .dialog()
+                                .message(
+                                    "Quit LLM Wiki? Choose OK to exit. Choose Cancel to hide the window and keep background features running.",
+                                )
+                                .title("LLM Wiki")
+                                .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
+                                .blocking_show();
+
+                            if confirmed {
+                                let _ = win.destroy();
+                                app.exit(0);
+                            } else {
+                                let _ = win.hide();
+                            }
+                        });
+                    }
                 }
             }
         })

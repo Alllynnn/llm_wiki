@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react"
 import { open } from "@tauri-apps/plugin-dialog"
+import { invoke } from "@tauri-apps/api/core"
+import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart"
 import i18n from "@/i18n"
 import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { listDirectory, openProject } from "@/commands/fs"
-import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchConfig, loadApiConfig } from "@/lib/project-store"
+import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchConfig, loadApiConfig, loadGeneralConfig } from "@/lib/project-store"
 import { loadReviewItems, loadLintItems, loadChatHistory } from "@/lib/persist"
 import { setupAutoSave } from "@/lib/auto-save"
 import { startClipWatcher } from "@/lib/clip-watcher"
@@ -238,6 +240,23 @@ function App() {
                 : false,
             token: typeof savedApi.token === "string" ? savedApi.token : "",
           })
+        }
+        const savedGeneral = await loadGeneralConfig()
+        useWikiStore.getState().setGeneralConfig(savedGeneral)
+        try {
+          await invoke<string>("set_close_behavior", { value: savedGeneral.closeBehavior })
+        } catch (err) {
+          console.warn("[general] failed to hydrate close behavior:", err)
+        }
+        try {
+          const currentAutostart = await isAutostartEnabled()
+          if (savedGeneral.autostart && !currentAutostart) {
+            await enableAutostart()
+          } else if (!savedGeneral.autostart && currentAutostart) {
+            await disableAutostart()
+          }
+        } catch (err) {
+          console.warn("[general] failed to sync autostart:", err)
         }
         const savedLang = await loadLanguage()
         if (savedLang) {

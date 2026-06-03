@@ -1,6 +1,6 @@
 import { load } from "@tauri-apps/plugin-store"
 import type { WikiProject } from "@/types/wiki"
-import type { ApiConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig } from "@/stores/wiki-store"
+import type { ApiConfig, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig } from "@/stores/wiki-store"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { normalizePath } from "@/lib/path-utils"
 
@@ -155,6 +155,36 @@ export async function saveApiConfig(config: ApiConfig): Promise<void> {
 export async function loadApiConfig(): Promise<ApiConfig | null> {
   const store = await getStore()
   return (await store.get<ApiConfig>(API_CONFIG_KEY)) ?? null
+}
+
+const GENERAL_CONFIG_KEY = "generalConfig"
+
+export const DEFAULT_GENERAL_CONFIG: GeneralConfig = {
+  autostart: false,
+  closeBehavior: "ask",
+}
+
+export function normalizeGeneralConfig(config?: Partial<GeneralConfig> | null): GeneralConfig {
+  const closeBehavior = config?.closeBehavior
+  return {
+    autostart: typeof config?.autostart === "boolean" ? config.autostart : DEFAULT_GENERAL_CONFIG.autostart,
+    closeBehavior:
+      closeBehavior === "ask" || closeBehavior === "minimize" || closeBehavior === "exit"
+        ? closeBehavior
+        : DEFAULT_GENERAL_CONFIG.closeBehavior,
+  }
+}
+
+export async function saveGeneralConfig(config: GeneralConfig): Promise<void> {
+  const store = await getStore()
+  await store.set(GENERAL_CONFIG_KEY, normalizeGeneralConfig(config))
+  await store.save()
+}
+
+export async function loadGeneralConfig(): Promise<GeneralConfig> {
+  const store = await getStore()
+  const config = await store.get<Partial<GeneralConfig>>(GENERAL_CONFIG_KEY)
+  return normalizeGeneralConfig(config)
 }
 
 const SCHEDULED_IMPORT_KEY_PREFIX = "scheduledImportConfig:"
