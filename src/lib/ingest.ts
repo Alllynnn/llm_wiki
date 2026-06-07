@@ -202,6 +202,10 @@ function resolveCaptionConfig(
 import { buildLanguageDirective } from "@/lib/output-language"
 import { detectLanguage } from "@/lib/detect-language"
 import { sameScriptFamily } from "@/lib/language-metadata"
+import {
+  loadProjectWikiSchemaRouting,
+  validateWikiPageRouting,
+} from "@/lib/wiki-schema"
 
 // Legacy export kept for backward compatibility with existing diagnostic
 // tests. The live pipeline goes through parseFileBlocks() below, which
@@ -1285,6 +1289,7 @@ async function writeFileBlocks(
   // be written, so the next re-ingest goes through the full pipeline
   // instead of replaying the partial result forever.
   const hardFailures: string[] = []
+  const projectSchemaRouting = await loadProjectWikiSchemaRouting(projectPath)
 
   const targetLang = useWikiStore.getState().outputLanguage
   const today = currentWikiDate()
@@ -1311,6 +1316,24 @@ async function writeFileBlocks(
     }
     if (!isLogPath(relativePath) && !isListingPath(relativePath)) {
       content = canonicalizeSourcesField(content, sourceFileName)
+    }
+
+    if (
+      projectSchemaRouting &&
+      !isLogPath(relativePath) &&
+      !isListingPath(relativePath)
+    ) {
+      const routingIssue = validateWikiPageRouting(
+        relativePath,
+        content,
+        projectSchemaRouting,
+      )
+      if (routingIssue) {
+        const msg = `Dropped "${relativePath}" — ${routingIssue.message}`
+        console.warn(`[ingest] ${msg}`)
+        warnings.push(msg)
+        continue
+      }
     }
 
     // Language guard: reject individual FILE blocks whose body contradicts
@@ -1559,6 +1582,7 @@ export function buildGenerationPrompt(
           "Use this schema as the primary routing rule for page types and directories.",
           "If it defines custom folders or distinctions (for example people, technologies, organizations, methods, or cases), write pages into those schema-defined folders instead of forcing them into wiki/entities/ or wiki/concepts/.",
           "Use wiki/entities/ and wiki/concepts/ only when the schema does not provide a more specific destination.",
+          "Every generated page's frontmatter type must match the schema directory used in its FILE path.",
         ].join("\n")
       : "",
     "",
