@@ -7,6 +7,7 @@ import { useWikiStore, type LlmConfig, type SearchApiConfig } from "@/stores/wik
 import { useResearchStore } from "@/stores/research-store"
 import { normalizePath } from "@/lib/path-utils"
 import { buildLanguageDirective } from "@/lib/output-language"
+import { makeQueryFileName } from "@/lib/wiki-filename"
 
 const MAX_RESEARCH_SOURCES = 20
 
@@ -22,6 +23,14 @@ interface CollectResearchSourceOptions {
 interface ResearchSourceCollection {
   results: import("./web-search").WebSearchResult[]
   errors: string[]
+}
+
+export function makeDeepResearchFileName(topic: string, now: Date = new Date()): {
+  fileName: string
+  date: string
+} {
+  const { fileName, date } = makeQueryFileName(`research-${topic}`, now)
+  return { fileName, date }
 }
 
 /**
@@ -241,9 +250,7 @@ async function executeResearch(
     // Step 3: Save to wiki
     store.updateTask(taskId, { status: "saving", synthesis: accumulated })
 
-    const date = new Date().toISOString().slice(0, 10)
-    const slug = topic.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 50)
-    const fileName = `research-${slug}-${date}.md`
+    const { fileName, date } = makeDeepResearchFileName(topic)
     const filePath = `${pp}/wiki/queries/${fileName}`
 
     const references = webResults

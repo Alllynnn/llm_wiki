@@ -39,7 +39,7 @@ describe("source identity helpers", () => {
 
   it("escapes slug segments so delimiter-containing folders do not collide", () => {
     expect(sourceSummarySlugFromIdentity("a--b/config.yaml")).toMatch(
-      /^4-a--b--6-config--[a-z0-9]+$/,
+      /^3-a-b--6-config--[a-z0-9]+$/,
     )
     expect(sourceSummarySlugFromIdentity("a/b/config.yaml")).toMatch(
       /^1-a--1-b--6-config--[a-z0-9]+$/,
@@ -55,6 +55,10 @@ describe("source identity helpers", () => {
     expect(slug.length).toBeLessThanOrEqual(120)
     expect(`wiki/sources/${slug}.md`.length).toBeLessThanOrEqual(136)
     expect(slug).toMatch(/--[a-z0-9]+$/)
+    expect(slug).toContain("2024年")
+    expect(slug).toContain("污水处理")
+    expect(slug).toContain("反硝化除磷技术研究报告")
+    expect(slug).not.toContain("%")
   })
 
   it("keeps stable hashes when truncating long nested source slugs", () => {

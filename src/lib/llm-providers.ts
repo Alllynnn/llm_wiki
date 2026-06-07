@@ -263,6 +263,10 @@ function isDeepSeekEndpoint(config: LlmConfig): boolean {
   return /deepseek/i.test(config.model) || /deepseek/i.test(config.customEndpoint)
 }
 
+function supportsDeepSeekThinkingParam(config: LlmConfig): boolean {
+  return /deepseek[-_]?v4/i.test(config.model)
+}
+
 function isQwenThinkingModel(model: string): boolean {
   return /qwen[-_]?3/i.test(model)
 }
@@ -364,12 +368,14 @@ function buildOpenAiCompatibleBody(
     // important path for ingestion/rewrite tasks: it prevents the model
     // from spending the whole response on `reasoning_content` with no
     // final `content`.
-    if (reasoning.mode === "off") {
-      body.thinking = { type: "disabled" }
-    } else if (reasoning.mode !== "auto") {
-      body.thinking = { type: "enabled" }
-      if (reasoning.mode === "high" || reasoning.mode === "max") {
-        body.reasoning_effort = reasoning.mode
+    if (supportsDeepSeekThinkingParam(config)) {
+      if (reasoning.mode === "off") {
+        body.thinking = { type: "disabled" }
+      } else if (reasoning.mode !== "auto") {
+        body.thinking = { type: "enabled" }
+        if (reasoning.mode === "high" || reasoning.mode === "max") {
+          body.reasoning_effort = reasoning.mode
+        }
       }
     }
     return body

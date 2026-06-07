@@ -1171,6 +1171,43 @@ async function matchingRawSourceIdentitiesForBasename(
   return matches
 }
 
+export function currentWikiDate(now: Date = new Date()): string {
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, "0")
+  const day = String(now.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+export function stampGeneratedFrontmatterDates(content: string, date: string): string {
+  const fmRe = /^(---\s*\r?\n)([\s\S]*?)(\r?\n---\s*(?:\r?\n|$))/
+  const match = content.match(fmRe)
+  if (!match) return content
+
+  let payload = match[2]
+  payload = setOrAppendFrontmatterDate(payload, "created", date)
+  payload = setOrAppendFrontmatterDate(payload, "updated", date)
+  return `${match[1]}${payload}${match[3]}${content.slice(match[0].length)}`
+}
+
+export function stampGeneratedLogDate(content: string, date: string): string {
+  const normalized = content.replace(/\bYYYY-MM-DD\b/g, date)
+  if (/^\s*##\s*\[?\d{4}-\d{2}-\d{2}\]?/m.test(normalized)) {
+    return normalized.replace(
+      /^(\s*##\s*\[?)\d{4}-\d{2}-\d{2}(\]?)/m,
+      `$1${date}$2`,
+    )
+  }
+  return normalized
+}
+
+function setOrAppendFrontmatterDate(payload: string, key: "created" | "updated", date: string): string {
+  const lineRe = new RegExp(`(^|\\n)(${key}\\s*:\\s*)[^\\n\\r]*`, "i")
+  if (lineRe.test(payload)) {
+    return payload.replace(lineRe, (_match, prefix: string, label: string) => `${prefix}${label}${date}`)
+  }
+  return `${payload.trimEnd()}\n${key}: ${date}`
+}
+
 async function writeFileBlocks(
   projectPath: string,
   text: string,
@@ -1193,6 +1230,7 @@ async function writeFileBlocks(
   const hardFailures: string[] = []
 
   const targetLang = useWikiStore.getState().outputLanguage
+  const today = currentWikiDate()
 
   for (const { path: rawRelativePath, content: rawContent } of blocks) {
     let relativePath = rawRelativePath
@@ -1209,6 +1247,11 @@ async function writeFileBlocks(
     // unparseable frontmatter and the read-time fallback had to
     // paper over it forever.
     let content = sanitizeIngestedFileContent(rawContent)
+    if (isLogPath(relativePath)) {
+      content = stampGeneratedLogDate(content, today)
+    } else if (!isListingPath(relativePath)) {
+      content = stampGeneratedFrontmatterDates(content, today)
+    }
     if (!isLogPath(relativePath) && !isListingPath(relativePath)) {
       content = canonicalizeSourcesField(content, sourceFileName)
     }
@@ -1438,6 +1481,7 @@ export function buildGenerationPrompt(
   // Use original filename (without extension) as the source summary page name
   const sourceBaseName = sourceFileName.replace(/\.[^.]+$/, "")
   const summaryPath = sourceSummaryPath ?? `wiki/sources/${sourceBaseName}.md`
+  const today = currentWikiDate()
 
   return [
     "You are a wiki maintainer. Based on the analysis provided, generate wiki files.",
@@ -1448,6 +1492,7 @@ export function buildGenerationPrompt(
     `## IMPORTANT: Source File`,
     `The original source file is: **${sourceFileName}**`,
     `All wiki pages generated from this source MUST include this filename in their frontmatter \`sources\` field.`,
+    `Today's date is **${today}**. Use this exact date for all new \`created\`, \`updated\`, and wiki/log.md ingest dates.`,
     "",
     schema
       ? [
@@ -1486,8 +1531,8 @@ export function buildGenerationPrompt(
     "Required fields and types:",
     `  • type     — one of the known types (${GENERATION_WIKI_TYPES.join(" | ")}), or a custom type explicitly defined by the project schema`,
     "  • title    — string (quote it if it contains a colon, e.g. `title: \"Foo: Bar\"`)",
-    "  • created  — date in YYYY-MM-DD form (no quotes)",
-    "  • updated  — same as created",
+    `  • created  — ${today} for new pages (YYYY-MM-DD, no quotes)`,
+    `  • updated  — ${today} for new pages (same as created)`,
     "  • tags     — array of bare strings: `tags: [microbiology, ai]`",
     "  • related  — array of bare wiki page slugs: `related: [foo, bar-baz]`. Do NOT include",
     "               `wiki/`, `.md`, or `[[…]]` here — slugs only.",
@@ -1499,8 +1544,8 @@ export function buildGenerationPrompt(
     "    ---",
     "    type: entity",
     "    title: Example Entity",
-    "    created: 2026-04-29",
-    "    updated: 2026-04-29",
+    `    created: ${today}`,
+    `    updated: ${today}`,
     "    tags: [example, demo]",
     "    related: [related-slug-1, related-slug-2]",
     `    sources: ["${sourceFileName}"]`,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { collectResearchSources } from "./deep-research"
+import { collectResearchSources, makeDeepResearchFileName } from "./deep-research"
 import type { SearchApiConfig } from "@/stores/wiki-store"
 import type { WebSearchResult } from "./web-search"
 
@@ -24,6 +24,23 @@ function config(patch: Partial<SearchApiConfig>): SearchApiConfig {
     ...patch,
   }
 }
+
+describe("makeDeepResearchFileName", () => {
+  it("keeps Unicode topics and includes time to avoid same-day overwrite", () => {
+    const first = makeDeepResearchFileName(
+      "反硝化除磷",
+      new Date("2026-06-06T10:00:00.000Z"),
+    )
+    const second = makeDeepResearchFileName(
+      "反硝化除磷",
+      new Date("2026-06-06T10:00:01.000Z"),
+    )
+
+    expect(first.fileName).toBe("research-反硝化除磷-2026-06-06-100000.md")
+    expect(second.fileName).toBe("research-反硝化除磷-2026-06-06-100001.md")
+    expect(first.fileName).not.toBe(second.fileName)
+  })
+})
 
 describe("collectResearchSources", () => {
   it("uses only Web Search when source mode is web", async () => {

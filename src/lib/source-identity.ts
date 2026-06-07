@@ -3,6 +3,7 @@ import { getFileName, normalizePath } from "@/lib/path-utils"
 const RAW_SOURCES_PREFIX = "raw/sources/"
 const RAW_SOURCES_MARKER = "/raw/sources/"
 const MAX_SOURCE_SUMMARY_SLUG_LENGTH = 120
+const FALLBACK_SOURCE_PART = "source"
 
 export function sourceIdentityForPath(projectPath: string, sourcePath: string): string {
   const pp = normalizePath(projectPath).replace(/\/+$/, "")
@@ -48,11 +49,8 @@ export function sourceSummarySlugFromIdentity(sourceIdentity: string): string {
 
   const hash = stableSlugHash(sourceIdentity)
   const slug = parts.map((part) => {
-    const encoded = encodeURIComponent(part).replace(
-      /[!'()*]/g,
-      (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
-    )
-    return `${encoded.length}-${encoded}`
+    const readable = readableSlugPart(part)
+    return `${Array.from(readable).length}-${readable}`
   }).join("--")
   const fullSlug = `${slug}--${hash}`
   if (fullSlug.length <= MAX_SOURCE_SUMMARY_SLUG_LENGTH) {
@@ -68,6 +66,18 @@ export function sourceSummarySlugFromIdentity(sourceIdentity: string): string {
 
 function trimIncompletePercentEncoding(value: string): string {
   return value.replace(/%(?:[0-9A-F])?$/i, "")
+}
+
+function readableSlugPart(part: string): string {
+  const slug = part
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^\p{L}\p{N}-]/gu, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase()
+  return slug || FALLBACK_SOURCE_PART
 }
 
 function stableSlugHash(value: string): string {
