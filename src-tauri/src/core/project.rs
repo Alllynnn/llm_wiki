@@ -353,6 +353,23 @@ pub fn open_project(path: String) -> Result<WikiProject, ProjectError> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Project ID
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Derive a stable, short project identifier from a canonical filesystem path.
+///
+/// The identifier is the first 16 hex characters (8 bytes) of the blake3 hash
+/// of the path's UTF-8 bytes.  Callers must pass a canonicalized path so that
+/// symlinks and relative segments don't produce different IDs for the same
+/// on-disk location.
+pub fn project_id_from_canonical_path(p: &std::path::Path) -> String {
+    let bytes = p.to_string_lossy().as_bytes().to_vec();
+    let hash = blake3::hash(&bytes);
+    // 16 hex chars = 8 bytes
+    hash.to_hex().as_str()[..16].to_string()
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -496,5 +513,27 @@ mod tests {
 
         let root = base.join("valid");
         assert!(validate_wiki_project_root(&root).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tests_project_id {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn project_id_is_stable_for_same_path() {
+        let p = PathBuf::from("/srv/projects/thesis");
+        let a = project_id_from_canonical_path(&p);
+        let b = project_id_from_canonical_path(&p);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+    }
+
+    #[test]
+    fn project_id_differs_for_different_paths() {
+        let a = project_id_from_canonical_path(&PathBuf::from("/a/thesis"));
+        let b = project_id_from_canonical_path(&PathBuf::from("/b/thesis"));
+        assert_ne!(a, b);
     }
 }

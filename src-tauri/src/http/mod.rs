@@ -14,6 +14,7 @@ pub mod events;
 pub mod embed;
 pub mod error_mapping;
 pub mod session_event_sink;
+pub mod projects;
 
 use std::sync::Arc;
 
@@ -42,6 +43,7 @@ pub fn main_router(state: AppState) -> Router {
     let authed = Router::new()
         .route("/api/v1/health", get(health))
         .merge(auth::auth_router())
+        .merge(projects::projects_router())
         .route("/api/v1/events", get(events::events_handler))
         // Session middleware: extract cookie, inject User if valid.
         .route_layer(from_fn_with_state(state.clone(), auth::session_middleware))
@@ -361,6 +363,113 @@ mod tests {
         assert!(bus.registered_count() >= 1, "session was not registered in bus");
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn projects_list_without_cookie_is_401() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/projects/list")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn projects_open_rejects_path_traversal() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state.clone());
+
+        // Log in
+        let body = r#"{"username":"alice","password":"pw"}"#;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookie = extract_set_cookie(&resp).split(';').next().unwrap().to_string();
+
+        // open with .. should fail
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/projects/open")
+                    .header("content-type", "application/json")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::from(r#"{"path": "../etc"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "PATH_ESCAPE");
+    }
+
+    #[tokio::test]
+    async fn projects_list_returns_empty_when_root_empty() {
+        let (dir, state) = build_state_with_user("alice", "pw");
+        // Create the projects_root directory (tests use "./projects" which may not exist;
+        // we use a real temp dir here by overriding the state).
+        let projects_root = dir.path().join("projects");
+        std::fs::create_dir_all(&projects_root).unwrap();
+        let cfg = crate::config::ServerConfig {
+            port: 8080,
+            projects_root,
+            data_root: dir.path().to_path_buf(),
+            legacy_19828_enabled: true,
+            session_cookie_name: "test_session".into(),
+        };
+        let state = AppState {
+            config: std::sync::Arc::new(cfg),
+            ..state
+        };
+        let app = main_router(state.clone());
+
+        let body = r#"{"username":"alice","password":"pw"}"#;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookie = extract_set_cookie(&resp).split(';').next().unwrap().to_string();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/projects/list")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let arr: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(arr.is_empty());
     }
 
     #[tokio::test]
