@@ -18,7 +18,9 @@ pub async fn vector_upsert(
     page_id: String,
     embedding: Vec<f32>,
 ) -> Result<(), String> {
-    crate::core::vectorstore::vector_upsert(project_path, page_id, embedding).await
+    crate::core::vectorstore::vector_upsert(project_path, page_id, embedding)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Search for similar pages by embedding vector (v1 legacy table).
@@ -28,19 +30,25 @@ pub async fn vector_search(
     query_embedding: Vec<f32>,
     top_k: usize,
 ) -> Result<Vec<VectorSearchResult>, String> {
-    crate::core::vectorstore::vector_search(project_path, query_embedding, top_k).await
+    crate::core::vectorstore::vector_search(project_path, query_embedding, top_k)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Delete a page from the v1 vector index.
 #[tauri::command]
 pub async fn vector_delete(project_path: String, page_id: String) -> Result<(), String> {
-    crate::core::vectorstore::vector_delete(project_path, page_id).await
+    crate::core::vectorstore::vector_delete(project_path, page_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Get count of indexed vectors (v1 legacy table).
 #[tauri::command]
 pub async fn vector_count(project_path: String) -> Result<usize, String> {
-    crate::core::vectorstore::vector_count(project_path).await
+    crate::core::vectorstore::vector_count(project_path)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Upsert a batch of chunks for a single page into the v2 chunk table.
@@ -50,7 +58,9 @@ pub async fn vector_upsert_chunks(
     page_id: String,
     chunks: Vec<ChunkUpsertInput>,
 ) -> Result<(), String> {
-    crate::core::vectorstore::vector_upsert_chunks(project_path, page_id, chunks).await
+    crate::core::vectorstore::vector_upsert_chunks(project_path, page_id, chunks)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Top-K chunk search against the v2 chunk table.
@@ -60,35 +70,47 @@ pub async fn vector_search_chunks(
     query_embedding: Vec<f32>,
     top_k: usize,
 ) -> Result<Vec<ChunkSearchResult>, String> {
-    crate::core::vectorstore::vector_search_chunks(project_path, query_embedding, top_k).await
+    crate::core::vectorstore::vector_search_chunks(project_path, query_embedding, top_k)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Delete every chunk belonging to a page from the v2 table.
 #[tauri::command]
 pub async fn vector_delete_page(project_path: String, page_id: String) -> Result<(), String> {
-    crate::core::vectorstore::vector_delete_page(project_path, page_id).await
+    crate::core::vectorstore::vector_delete_page(project_path, page_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Total chunk count in the v2 table.
 #[tauri::command]
 pub async fn vector_count_chunks(project_path: String) -> Result<usize, String> {
-    crate::core::vectorstore::vector_count_chunks(project_path).await
+    crate::core::vectorstore::vector_count_chunks(project_path)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Drop the v2 chunk table entirely.
 #[tauri::command]
 pub async fn vector_clear_chunks(project_path: String) -> Result<(), String> {
-    crate::core::vectorstore::vector_clear_chunks(project_path).await
+    crate::core::vectorstore::vector_clear_chunks(project_path)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Row count of the legacy v1 table (0 when absent).
 #[tauri::command]
 pub async fn vector_legacy_row_count(project_path: String) -> Result<usize, String> {
-    crate::core::vectorstore::vector_legacy_row_count(project_path).await
+    crate::core::vectorstore::vector_legacy_row_count(project_path)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Drop the legacy v1 table entirely.
 #[tauri::command]
 pub async fn vector_drop_legacy(project_path: String) -> Result<(), String> {
-    crate::core::vectorstore::vector_drop_legacy(project_path).await
+    crate::core::vectorstore::vector_drop_legacy(project_path)
+        .await
+        .map_err(|e| e.to_string())
 }

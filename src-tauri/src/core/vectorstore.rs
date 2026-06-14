@@ -30,17 +30,24 @@ pub enum VectorstoreError {
     #[error("arrow error: {0}")]
     Arrow(String),
     #[error("blocking task panicked: {0}")]
-    Join(String),
+    Panic(String),
 }
 
-// The existing command bodies return `Result<T, String>` through
-// `run_guarded_async`. Rather than rewrite every internal `map_err` call,
-// we expose each public function with the same `Result<T, String>` signature
-// so the command wrappers remain trivial (`map_err(|e| e.to_string())`
-// is still valid but unnecessary — signatures already match).
-//
-// If callers outside of Tauri commands need typed errors in the future,
-// `VectorstoreError` is already defined above for that migration.
+impl VectorstoreError {
+    /// Convert a `String` error from `panic_guard::run_guarded_async` into a
+    /// typed variant. The heuristic is intentionally simple — Phase 4 HTTP
+    /// handlers can match on the enum rather than inspect string content.
+    pub fn from_guarded(s: String) -> Self {
+        if s.starts_with("panic:") || s.contains("panicked") {
+            VectorstoreError::Panic(s)
+        } else if s.contains("arrow") {
+            VectorstoreError::Arrow(s)
+        } else {
+            // lancedb errors and anything else fall here
+            VectorstoreError::Lance(s)
+        }
+    }
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public data types
@@ -93,19 +100,21 @@ const TABLE_V1: &str = "wiki_vectors";
 const TABLE_V2: &str = "wiki_chunks_v2";
 
 /// Validate page_id to prevent filter injection
-fn validate_page_id(page_id: &str) -> Result<(), String> {
+fn validate_page_id(page_id: &str) -> Result<(), VectorstoreError> {
     if page_id.is_empty() || page_id.len() > 256 {
-        return Err("Invalid page_id: empty or too long".to_string());
+        return Err(VectorstoreError::InvalidArgument(
+            "Invalid page_id: empty or too long".to_string(),
+        ));
     }
     // Only allow alphanumeric, hyphens, underscores, dots
     if !page_id
         .chars()
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        return Err(format!(
+        return Err(VectorstoreError::InvalidArgument(format!(
             "Invalid page_id: contains disallowed characters: {}",
             page_id
-        ));
+        )));
     }
     Ok(())
 }
@@ -138,18 +147,20 @@ fn make_batch(
     RecordBatch::try_new(schema, vec![ids, vector]).map_err(|e| format!("Batch error: {e}"))
 }
 
-fn validate_page_id_for_v2(page_id: &str) -> Result<(), String> {
+fn validate_page_id_for_v2(page_id: &str) -> Result<(), VectorstoreError> {
     if page_id.is_empty() || page_id.len() > 256 {
-        return Err("Invalid page_id: empty or too long".to_string());
+        return Err(VectorstoreError::InvalidArgument(
+            "Invalid page_id: empty or too long".to_string(),
+        ));
     }
     if !page_id
         .chars()
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        return Err(format!(
+        return Err(VectorstoreError::InvalidArgument(format!(
             "Invalid page_id: contains disallowed characters: {}",
             page_id
-        ));
+        )));
     }
     Ok(())
 }
@@ -236,9 +247,9 @@ pub async fn vector_upsert(
     project_path: String,
     page_id: String,
     embedding: Vec<f32>,
-) -> Result<(), String> {
+) -> Result<(), VectorstoreError> {
     run_guarded_async("vector_upsert", async move {
-        validate_page_id(&page_id)?;
+        validate_page_id(&page_id).map_err(|e| e.to_string())?;
 
         let db = connect(&db_path(&project_path))
             .execute()
@@ -286,6 +297,7 @@ pub async fn vector_upsert(
         Ok(())
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Search for similar pages by embedding vector (v1 legacy table).
@@ -293,7 +305,7 @@ pub async fn vector_search(
     project_path: String,
     query_embedding: Vec<f32>,
     top_k: usize,
-) -> Result<Vec<VectorSearchResult>, String> {
+) -> Result<Vec<VectorSearchResult>, VectorstoreError> {
     run_guarded_async("vector_search", async move {
         let db = connect(&db_path(&project_path))
             .execute()
@@ -354,12 +366,13 @@ pub async fn vector_search(
         Ok(search_results)
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Delete a page from the v1 vector index.
-pub async fn vector_delete(project_path: String, page_id: String) -> Result<(), String> {
+pub async fn vector_delete(project_path: String, page_id: String) -> Result<(), VectorstoreError> {
     run_guarded_async("vector_delete", async move {
-        validate_page_id(&page_id)?;
+        validate_page_id(&page_id).map_err(|e| e.to_string())?;
 
         let db = connect(&db_path(&project_path))
             .execute()
@@ -390,10 +403,11 @@ pub async fn vector_delete(project_path: String, page_id: String) -> Result<(), 
         Ok(())
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Get count of indexed vectors (v1 legacy table).
-pub async fn vector_count(project_path: String) -> Result<usize, String> {
+pub async fn vector_count(project_path: String) -> Result<usize, VectorstoreError> {
     run_guarded_async("vector_count", async move {
         let db = connect(&db_path(&project_path))
             .execute()
@@ -424,6 +438,7 @@ pub async fn vector_count(project_path: String) -> Result<usize, String> {
         Ok(count)
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -465,9 +480,9 @@ pub async fn vector_upsert_chunks(
     project_path: String,
     page_id: String,
     chunks: Vec<ChunkUpsertInput>,
-) -> Result<(), String> {
+) -> Result<(), VectorstoreError> {
     run_guarded_async("vector_upsert_chunks", async move {
-        validate_page_id_for_v2(&page_id)?;
+        validate_page_id_for_v2(&page_id).map_err(|e| e.to_string())?;
 
         if chunks.is_empty() {
             return Ok(());
@@ -525,6 +540,7 @@ pub async fn vector_upsert_chunks(
         Ok(())
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Top-K chunk search. Returns every matching chunk's metadata + score
@@ -534,7 +550,7 @@ pub async fn vector_search_chunks(
     project_path: String,
     query_embedding: Vec<f32>,
     top_k: usize,
-) -> Result<Vec<ChunkSearchResult>, String> {
+) -> Result<Vec<ChunkSearchResult>, VectorstoreError> {
     run_guarded_async("vector_search_chunks", async move {
         let db = connect(&db_path(&project_path))
             .execute()
@@ -614,13 +630,14 @@ pub async fn vector_search_chunks(
         Ok(out)
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Delete every chunk belonging to a page. Used when a source document
 /// is removed, or before a full re-embed of a page whose content shrank.
-pub async fn vector_delete_page(project_path: String, page_id: String) -> Result<(), String> {
+pub async fn vector_delete_page(project_path: String, page_id: String) -> Result<(), VectorstoreError> {
     run_guarded_async("vector_delete_page", async move {
-        validate_page_id_for_v2(&page_id)?;
+        validate_page_id_for_v2(&page_id).map_err(|e| e.to_string())?;
 
         let db = connect(&db_path(&project_path))
             .execute()
@@ -651,11 +668,12 @@ pub async fn vector_delete_page(project_path: String, page_id: String) -> Result
         Ok(())
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Total chunk count in the v2 table (not pages — chunks). Useful for
 /// "vector index has N chunks" status text.
-pub async fn vector_count_chunks(project_path: String) -> Result<usize, String> {
+pub async fn vector_count_chunks(project_path: String) -> Result<usize, VectorstoreError> {
     run_guarded_async("vector_count_chunks", async move {
         let db = connect(&db_path(&project_path))
             .execute()
@@ -686,12 +704,13 @@ pub async fn vector_count_chunks(project_path: String) -> Result<usize, String> 
         Ok(count)
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Drop the v2 chunk table entirely. Used by Settings → Embedding
 /// "Re-index all pages" so a rebuild reflects the current wiki tree
 /// exactly and removes chunks for deleted/renamed pages.
-pub async fn vector_clear_chunks(project_path: String) -> Result<(), String> {
+pub async fn vector_clear_chunks(project_path: String) -> Result<(), VectorstoreError> {
     run_guarded_async("vector_clear_chunks", async move {
         let db = connect(&db_path(&project_path))
             .execute()
@@ -715,13 +734,14 @@ pub async fn vector_clear_chunks(project_path: String) -> Result<(), String> {
         Ok(())
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Report whether the legacy per-page v1 table exists with any rows —
 /// the TS layer uses this to show a one-time "re-index to v2" prompt in
 /// Settings → Embedding after upgrading. Returns 0 when v1 is absent or
 /// empty; otherwise returns the row count.
-pub async fn vector_legacy_row_count(project_path: String) -> Result<usize, String> {
+pub async fn vector_legacy_row_count(project_path: String) -> Result<usize, VectorstoreError> {
     run_guarded_async("vector_legacy_row_count", async move {
         let db = connect(&db_path(&project_path))
             .execute()
@@ -752,12 +772,13 @@ pub async fn vector_legacy_row_count(project_path: String) -> Result<usize, Stri
         Ok(count)
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 /// Drop the legacy v1 table entirely. Called from Settings → Embedding
 /// after the user has re-indexed into v2 so the orphaned v1 table stops
 /// taking disk space. No-op if v1 isn't present.
-pub async fn vector_drop_legacy(project_path: String) -> Result<(), String> {
+pub async fn vector_drop_legacy(project_path: String) -> Result<(), VectorstoreError> {
     run_guarded_async("vector_drop_legacy", async move {
         let db = connect(&db_path(&project_path))
             .execute()
@@ -783,6 +804,7 @@ pub async fn vector_drop_legacy(project_path: String) -> Result<(), String> {
         Ok(())
     })
     .await
+    .map_err(VectorstoreError::from_guarded)
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1030,7 +1052,7 @@ mod tests_v2 {
         ];
         let result = vector_upsert_chunks(pp, "page-a".into(), bad).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_lowercase().contains("dim"));
+        assert!(result.unwrap_err().to_string().to_lowercase().contains("dim"));
     }
 
     #[tokio::test]
