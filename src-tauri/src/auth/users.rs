@@ -44,14 +44,21 @@ struct UsersFile {
 pub struct Users {
     by_id: HashMap<String, UserRecord>,
     display_names: HashMap<String, String>,
+    // A pre-computed sentinel hash used to keep the unknown-user branch
+    // of verify_password running exactly one argon2 KDF — same cost as the
+    // known-user branch, so timing cannot distinguish the two cases.
+    sentinel_hash: String,
 }
 
 impl Users {
     pub fn load(path: &Path) -> Result<Self, UsersError> {
-        if !path.exists() {
-            return Err(UsersError::NotFound(path.display().to_string()));
-        }
-        let raw = std::fs::read_to_string(path)?;
+        let raw = std::fs::read_to_string(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                UsersError::NotFound(path.display().to_string())
+            } else {
+                UsersError::Io(e)
+            }
+        })?;
         let parsed: UsersFile = toml::from_str(&raw)
             .map_err(|e| UsersError::Malformed(e.to_string()))?;
 
@@ -62,7 +69,15 @@ impl Users {
             display_names.insert(id.clone(), name);
             by_id.insert(id, record);
         }
-        Ok(Users { by_id, display_names })
+
+        // Compute the sentinel hash up front. We tolerate failure here (an
+        // empty sentinel would defeat the timing protection, but argon2 hash
+        // generation realistically can't fail with a constant input), and
+        // log via debug_assert so a regression in dev surfaces loudly.
+        let sentinel_hash = hash_password("__timing_oracle_sentinel__")
+            .expect("argon2 hash of a constant input cannot fail");
+
+        Ok(Users { by_id, display_names, sentinel_hash })
     }
 
     pub fn verify_password(&self, username: &str, plaintext: &str) -> Result<User, AuthError> {
@@ -70,13 +85,10 @@ impl Users {
         let record = match self.by_id.get(&id) {
             Some(r) => r,
             None => {
-                // Spend the same time as a real verify to keep the
-                // unknown-user case from being a timing oracle. argon2
-                // verify dominates either branch; this dummy verify
-                // costs roughly the same as a real one.
-                let dummy_hash = hash_password("dummy-to-avoid-timing-oracle")
-                    .unwrap_or_default();
-                let _ = PasswordHash::new(&dummy_hash).and_then(|h| {
+                // Unknown user: run a single argon2 verify against the
+                // pre-computed sentinel so this branch costs the same as a
+                // real verify. No second KDF, no timing oracle.
+                let _ = PasswordHash::new(&self.sentinel_hash).and_then(|h| {
                     Argon2::default().verify_password(plaintext.as_bytes(), &h)
                 });
                 return Err(AuthError::InvalidCredentials);
@@ -197,8 +209,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_users_toml(&dir, "");
         let users = Users::load(&path).unwrap();
-        assert!(users
-            .verify_password("anyone", "pw")
-            .is_err());
+        let result = users.verify_password("anyone", "pw");
+        assert!(matches!(result, Err(AuthError::InvalidCredentials)));
+    }
+
+    #[test]
+    fn corrupted_stored_hash_returns_hash_error() {
+        let dir = TempDir::new().unwrap();
+        // user record exists but the password_hash isn't a valid argon2 string
+        let path = write_users_toml(
+            &dir,
+            "[users.alice]\npassword_hash = \"not-a-real-argon2-hash\"\n",
+        );
+        let users = Users::load(&path).unwrap();
+        let result = users.verify_password("alice", "anything");
+        assert!(
+            matches!(result, Err(AuthError::Hash(_))),
+            "expected AuthError::Hash for corrupted stored hash, got {:?}",
+            result
+        );
     }
 }
