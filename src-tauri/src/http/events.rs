@@ -2,8 +2,9 @@
 //!
 //! The browser opens a long-lived GET to `/api/v1/events` with its session
 //! cookie. The handler registers an mpsc receiver in `SessionBus` keyed by
-//! the session id, then forwards events to the client. Disconnection drops
-//! the guard, which unregisters the session from the bus.
+//! a unique `ConnectionId`, then forwards events to the client. Disconnection
+//! drops the guard, which unregisters only this connection from the bus —
+//! leaving any other concurrent tabs for the same session unaffected.
 //!
 //! For Phase 2 there are no senders yet — events get wired in later phases.
 
@@ -17,6 +18,7 @@ use tower_cookies::Cookies;
 
 use crate::http::error::ApiError;
 use crate::http::AppState;
+use crate::storage::session_bus::ConnectionId;
 
 pub async fn events_handler(
     State(state): State<AppState>,
@@ -37,13 +39,14 @@ pub async fn events_handler(
         return Err(ApiError::unauthenticated());
     }
 
-    let rx = state.session_bus.register(&session_id);
-    let guard = SessionGuard::new(state.session_bus.clone(), session_id.clone());
+    let (conn_id, rx) = state.session_bus.register(&session_id);
+    let guard = SessionGuard::new(state.session_bus.clone(), conn_id);
 
     let stream = async_stream::stream! {
         // Move the guard into the stream so it lives as long as the
         // connection. When the client disconnects axum drops the stream,
-        // which drops the guard, which unregisters from the bus.
+        // which drops the guard, which unregisters only this connection
+        // from the bus — other tabs for the same session keep their senders.
         let _guard = guard;
         let mut rx = rx;
         while let Some(evt) = rx.recv().await {
@@ -60,17 +63,17 @@ pub async fn events_handler(
 
 struct SessionGuard {
     bus: crate::storage::session_bus::SessionBus,
-    session_id: String,
+    connection_id: ConnectionId,
 }
 
 impl SessionGuard {
-    fn new(bus: crate::storage::session_bus::SessionBus, session_id: String) -> Self {
-        Self { bus, session_id }
+    fn new(bus: crate::storage::session_bus::SessionBus, connection_id: ConnectionId) -> Self {
+        Self { bus, connection_id }
     }
 }
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        self.bus.unregister(&self.session_id);
+        self.bus.unregister(&self.connection_id);
     }
 }

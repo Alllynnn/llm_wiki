@@ -44,42 +44,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Main listener: 0.0.0.0:<port> with auth.
     let main_addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
-    let main_app = main_router(state.clone());
     let main_listener = tokio::net::TcpListener::bind(&main_addr).await?;
     eprintln!("listening on http://{main_addr}");
 
-    let mut main_handle = tokio::spawn(async move {
-        axum::serve(main_listener, main_app).await
-    });
+    let main_app = main_router(state.clone());
+    let main_serve = axum::serve(main_listener, main_app)
+        .with_graceful_shutdown(shutdown_signal());
 
     // Legacy 127.0.0.1:19828 (no auth) — opt-out via config.
-    let mut legacy_handle: Option<tokio::task::JoinHandle<std::io::Result<()>>> = None;
     if config.legacy_19828_enabled {
         let legacy_addr: SocketAddr = "127.0.0.1:19828".parse()?;
         let legacy_app = legacy_router(state.clone());
         let legacy_listener = tokio::net::TcpListener::bind(&legacy_addr).await?;
         eprintln!("legacy listener on http://{legacy_addr}");
-        legacy_handle = Some(tokio::spawn(async move {
-            axum::serve(legacy_listener, legacy_app).await
-        }));
-    }
-
-    // Graceful shutdown on Ctrl+C
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            eprintln!("shutdown signal received");
-        }
-        r = &mut main_handle => {
-            r??;
-        }
-    }
-
-    main_handle.abort();
-    if let Some(h) = legacy_handle {
-        h.abort();
+        let legacy_serve = axum::serve(legacy_listener, legacy_app)
+            .with_graceful_shutdown(shutdown_signal());
+        let (a, b) = tokio::join!(main_serve, legacy_serve);
+        a?;
+        b?;
+    } else {
+        main_serve.await?;
     }
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    eprintln!("shutdown signal received");
 }
 
 fn ensure_dir(path: &Path) -> std::io::Result<()> {
