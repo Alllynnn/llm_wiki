@@ -15,6 +15,7 @@ pub mod embed;
 pub mod error_mapping;
 pub mod session_event_sink;
 pub mod projects;
+pub mod sources;
 pub mod wiki;
 
 use std::sync::Arc;
@@ -45,6 +46,7 @@ pub fn main_router(state: AppState) -> Router {
         .route("/api/v1/health", get(health))
         .merge(auth::auth_router())
         .merge(projects::projects_router())
+        .merge(sources::sources_router())
         .merge(wiki::wiki_router())
         .route("/api/v1/events", get(events::events_handler))
         // Session middleware: extract cookie, inject User if valid.
