@@ -69,6 +69,7 @@ impl UserData {
     }
 
     pub fn add_recently_opened(&self, user_id: &str, project_id: &str) -> Result<(), UserDataError> {
+        safe_segment("project_id", project_id)?;
         let path = self.user_dir(user_id)?.join("recently_opened.json");
         let mut current = self.recently_opened(user_id);
         current.retain(|p| p != project_id);
@@ -136,7 +137,12 @@ impl UserData {
 
 fn safe_segment(label: &'static str, segment: &str) -> Result<(), UserDataError> {
     // Allow [a-zA-Z0-9._-] only — covers usernames, conv UUIDs, project hashes.
+    // Reject "." and ".." explicitly: both pass the charset check but resolve
+    // to directory components that escape the intended subdir (e.g., a user_id
+    // of ".." produces `users/../config.json` which normalizes outside `users/`).
     if segment.is_empty()
+        || segment == "."
+        || segment == ".."
         || !segment.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
         return Err(match label {
@@ -252,5 +258,35 @@ mod tests {
     fn list_conversations_for_unused_project_is_empty() {
         let (_dir, ud) = ud();
         assert!(ud.list_conversations("alice", "untouched").unwrap().is_empty());
+    }
+
+    #[test]
+    fn dot_and_dotdot_user_id_are_rejected() {
+        let (_dir, ud) = ud();
+        assert!(matches!(
+            ud.save_config(".", &json!({})),
+            Err(UserDataError::InvalidUserId(_))
+        ));
+        assert!(matches!(
+            ud.save_config("..", &json!({})),
+            Err(UserDataError::InvalidUserId(_))
+        ));
+        assert!(matches!(
+            ud.load_config(".."),
+            Err(UserDataError::InvalidUserId(_))
+        ));
+    }
+
+    #[test]
+    fn add_recently_opened_validates_project_id() {
+        let (_dir, ud) = ud();
+        assert!(matches!(
+            ud.add_recently_opened("alice", ".."),
+            Err(UserDataError::InvalidProjectId(_))
+        ));
+        assert!(matches!(
+            ud.add_recently_opened("alice", "evil/path"),
+            Err(UserDataError::InvalidProjectId(_))
+        ));
     }
 }
