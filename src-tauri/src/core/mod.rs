@@ -13,6 +13,7 @@ pub mod file_sync;
 pub mod files;
 pub mod fs_ops;
 pub mod ingest_queue;
+pub mod llm_client;
 pub mod project;
 pub mod search;
 pub mod vectorstore;
