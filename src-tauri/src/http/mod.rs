@@ -5,11 +5,15 @@
 //! - `auth`: login, logout, whoami, session middleware (Task 2.7+).
 //! - `events`: per-session SSE stream (Task 2.9).
 //! - `embed`: rust-embed frontend serving (Task 2.10).
+//! - `error_mapping`: `From<XError> for ApiError` impls for every `core::*` error (Task 4.1).
+//! - `session_event_sink`: `SessionEventSink` — routes `EventSink::emit` to the session's SSE stream (Task 4.1).
 
 pub mod error;
 pub mod auth;
 pub mod events;
 pub mod embed;
+pub mod error_mapping;
+pub mod session_event_sink;
 
 use std::sync::Arc;
 
