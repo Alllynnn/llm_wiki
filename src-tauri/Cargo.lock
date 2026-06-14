@@ -4538,6 +4538,8 @@ dependencies = [
  "tauri-plugin-http",
  "tauri-plugin-opener",
  "tauri-plugin-store",
+ "tempfile",
+ "thiserror 1.0.69",
  "tiny_http",
  "tokio",
  "toml 0.8.2",

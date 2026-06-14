@@ -3,6 +3,7 @@ mod clip_server;
 mod commands;
 mod panic_guard;
 mod proxy;
+pub mod storage;
 mod tray;
 mod types;
 
