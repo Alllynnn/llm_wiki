@@ -1,4 +1,94 @@
-//! Phase 2 placeholder. Real boot logic lands in Task 2.11.
-fn main() {
-    panic!("llm-wiki-server is not yet implemented (Phase 2 in progress)");
+//! `llm-wiki-server` — the browser/LAN HTTP server entry point.
+
+use std::net::SocketAddr;
+use std::path::Path;
+
+use llm_wiki_lib::auth::sessions::Sessions;
+use llm_wiki_lib::auth::users::Users;
+use llm_wiki_lib::config::ServerConfig;
+use llm_wiki_lib::http::{legacy_router, main_router, AppState};
+use llm_wiki_lib::storage::session_bus::SessionBus;
+use llm_wiki_lib::storage::user_data::UserData;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = ServerConfig::from_env()?;
+
+    ensure_dir(&config.data_root)?;
+    ensure_dir(&config.projects_root)?;
+
+    let users_path = config.data_root.join("users.toml");
+    if !users_path.exists() {
+        eprintln!(
+            "no users.toml at {} — create it with at least one user before starting the server",
+            users_path.display()
+        );
+        eprintln!("example:");
+        eprintln!("  [users.alice]");
+        eprintln!("  password_hash = \"<argon2 hash>\"");
+        std::process::exit(2);
+    }
+
+    let users = Users::load(&users_path)?;
+    let sessions = Sessions::open(&config.data_root.join("sessions"))?;
+    let user_data = UserData::new(config.data_root.clone());
+    let session_bus = SessionBus::new();
+
+    let state = AppState {
+        users: std::sync::Arc::new(users),
+        sessions,
+        user_data,
+        session_bus,
+        config: std::sync::Arc::new(config.clone()),
+    };
+
+    // Main listener: 0.0.0.0:<port> with auth.
+    let main_addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
+    let main_app = main_router(state.clone());
+    let main_listener = tokio::net::TcpListener::bind(&main_addr).await?;
+    eprintln!("listening on http://{main_addr}");
+
+    let mut main_handle = tokio::spawn(async move {
+        axum::serve(main_listener, main_app).await
+    });
+
+    // Legacy 127.0.0.1:19828 (no auth) — opt-out via config.
+    let mut legacy_handle: Option<tokio::task::JoinHandle<std::io::Result<()>>> = None;
+    if config.legacy_19828_enabled {
+        let legacy_addr: SocketAddr = "127.0.0.1:19828".parse()?;
+        let legacy_app = legacy_router(state.clone());
+        let legacy_listener = tokio::net::TcpListener::bind(&legacy_addr).await?;
+        eprintln!("legacy listener on http://{legacy_addr}");
+        legacy_handle = Some(tokio::spawn(async move {
+            axum::serve(legacy_listener, legacy_app).await
+        }));
+    }
+
+    // Graceful shutdown on Ctrl+C
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("shutdown signal received");
+        }
+        r = &mut main_handle => {
+            r??;
+        }
+    }
+
+    main_handle.abort();
+    if let Some(h) = legacy_handle {
+        h.abort();
+    }
+
+    Ok(())
+}
+
+fn ensure_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o700);
+        std::fs::set_permissions(path, perms)?;
+    }
+    Ok(())
 }

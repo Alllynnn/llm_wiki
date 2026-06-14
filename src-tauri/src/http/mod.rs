@@ -55,6 +55,16 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({"status": "ok"}))
 }
 
+/// Router for the legacy 127.0.0.1:19828 listener: same handlers as
+/// `main_router` but without the session middleware. Phase 4 will narrow
+/// this to the agent-facing subset.
+pub fn legacy_router(state: AppState) -> Router {
+    let r = Router::new()
+        .route("/api/v1/health", get(health))
+        .with_state(state);
+    Router::new().merge(r).layer(CookieManagerLayer::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
