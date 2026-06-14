@@ -18,6 +18,9 @@ pub mod projects;
 pub mod sources;
 pub mod wiki;
 pub mod chat;
+pub mod config;
+pub mod fs_browser;
+pub mod files;
 
 use std::sync::Arc;
 
@@ -51,6 +54,9 @@ pub fn main_router(state: AppState) -> Router {
         .merge(sources::sources_router())
         .merge(wiki::wiki_router())
         .merge(chat::chat_router())
+        .merge(config::config_router())
+        .merge(fs_browser::fs_browser_router())
+        .merge(files::files_router())
         .route("/api/v1/events", get(events::events_handler))
         // Session middleware: extract cookie, inject User if valid.
         .route_layer(from_fn_with_state(state.clone(), auth::session_middleware))
@@ -783,5 +789,456 @@ mod tests {
         let body = to_bytes(resp.into_body(), 4096).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"]["code"], "PATH_ESCAPE");
+    }
+
+    // ── Config tests (Task 4.6) ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn config_get_without_cookie_is_401() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn config_get_for_new_user_returns_empty_object() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v.is_object());
+        assert_eq!(v.as_object().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn config_put_roundtrips_to_get() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        // PUT a config value.
+        let payload = serde_json::json!({ "llm": { "model": "gpt-4o" } }).to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", &cookie)
+                    .body(axum::body::Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // GET must return the same value.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .header("cookie", &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["llm"]["model"], "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn config_isolation_alice_does_not_see_bob() {
+        let dir = TempDir::new().unwrap();
+        // Build a state with two users.
+        let users_path = dir.path().join("users.toml");
+        let alice_hash = hash_password("pw").unwrap();
+        let bob_hash = hash_password("pw").unwrap();
+        std::fs::write(
+            &users_path,
+            format!(
+                "[users.alice]\npassword_hash = \"{alice_hash}\"\n\
+                 [users.bob]\npassword_hash = \"{bob_hash}\"\n"
+            ),
+        )
+        .unwrap();
+        let users = crate::auth::users::Users::load(&users_path).unwrap();
+        let sessions = crate::auth::sessions::Sessions::open(&dir.path().join("sessions")).unwrap();
+        let user_data = UserData::new(dir.path().to_path_buf());
+        let bus = crate::storage::session_bus::SessionBus::new();
+        let projects_root = dir.path().join("projects");
+        std::fs::create_dir_all(&projects_root).unwrap();
+        let cfg = crate::config::ServerConfig {
+            port: 8080,
+            projects_root,
+            data_root: dir.path().to_path_buf(),
+            legacy_19828_enabled: true,
+            session_cookie_name: "test_session".into(),
+        };
+        let state = AppState {
+            users: std::sync::Arc::new(users),
+            sessions,
+            user_data,
+            session_bus: bus,
+            config: std::sync::Arc::new(cfg),
+            llm_client: std::sync::Arc::new(crate::core::llm_client::LlmClient::new()),
+        };
+
+        let app = main_router(state.clone());
+        let alice_cookie = login(app.clone(), "alice", "pw").await;
+        let bob_cookie = login(app.clone(), "bob", "pw").await;
+
+        // Alice saves her config.
+        let payload = serde_json::json!({ "who": "alice" }).to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/config")
+                    .header("content-type", "application/json")
+                    .header("cookie", &alice_cookie)
+                    .body(axum::body::Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Bob reads config — must be empty, not alice's.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .header("cookie", &bob_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Bob's config must NOT contain alice's "who" key.
+        assert!(v.get("who").is_none(), "bob must not see alice's config");
+    }
+
+    // ── fs_browser tests (Task 4.7) ───────────────────────────────────────────
+
+    /// Build a state with a real temp projects_root (and a valid user).
+    fn build_state_with_real_projects_root(
+        username: &str,
+        password: &str,
+    ) -> (TempDir, AppState, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let hash = hash_password(password).unwrap();
+        let users_path = dir.path().join("users.toml");
+        std::fs::write(
+            &users_path,
+            format!("[users.{username}]\npassword_hash = \"{hash}\"\n"),
+        )
+        .unwrap();
+        let users = crate::auth::users::Users::load(&users_path).unwrap();
+        let sessions =
+            crate::auth::sessions::Sessions::open(&dir.path().join("sessions")).unwrap();
+        let user_data = UserData::new(dir.path().to_path_buf());
+        let bus = crate::storage::session_bus::SessionBus::new();
+        let projects_root = dir.path().join("projects");
+        std::fs::create_dir_all(&projects_root).unwrap();
+        let cfg = crate::config::ServerConfig {
+            port: 8080,
+            projects_root: projects_root.clone(),
+            data_root: dir.path().to_path_buf(),
+            legacy_19828_enabled: true,
+            session_cookie_name: "test_session".into(),
+        };
+        let state = AppState {
+            users: std::sync::Arc::new(users),
+            sessions,
+            user_data,
+            session_bus: bus,
+            config: std::sync::Arc::new(cfg),
+            llm_client: std::sync::Arc::new(crate::core::llm_client::LlmClient::new()),
+        };
+        (dir, state, projects_root)
+    }
+
+    #[tokio::test]
+    async fn fs_list_without_cookie_is_401() {
+        let (_dir, state, _root) = build_state_with_real_projects_root("alice", "pw");
+        let app = main_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/fs/list")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn fs_list_root_returns_entries() {
+        let (_dir, state, projects_root) =
+            build_state_with_real_projects_root("alice", "pw");
+        // Create a project subdir (with schema.md so is_project = true) and a plain dir.
+        let proj_dir = projects_root.join("myproj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(proj_dir.join("schema.md"), b"# Schema\n").unwrap();
+        std::fs::create_dir_all(projects_root.join("plain_dir")).unwrap();
+
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/fs/list")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = v["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+
+        let proj_entry = entries.iter().find(|e| e["name"] == "myproj").unwrap();
+        assert_eq!(proj_entry["is_dir"], true);
+        assert_eq!(proj_entry["is_project"], true);
+
+        let plain_entry = entries.iter().find(|e| e["name"] == "plain_dir").unwrap();
+        assert_eq!(plain_entry["is_dir"], true);
+        assert_eq!(plain_entry["is_project"], false);
+    }
+
+    #[tokio::test]
+    async fn fs_list_path_escape_rejected() {
+        let (_dir, state, _root) = build_state_with_real_projects_root("alice", "pw");
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/fs/list?path=../etc")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "PATH_ESCAPE");
+    }
+
+    #[tokio::test]
+    async fn fs_mkdir_creates_subdir_then_list_shows_it() {
+        let (_dir, state, _root) = build_state_with_real_projects_root("alice", "pw");
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        // Create a new subdirectory via mkdir.
+        let body = serde_json::json!({ "path": "newdir/sub" }).to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/fs/mkdir")
+                    .header("content-type", "application/json")
+                    .header("cookie", &cookie)
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 201);
+
+        // List root — must include "newdir".
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/fs/list")
+                    .header("cookie", &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = v["entries"].as_array().unwrap();
+        assert!(
+            entries.iter().any(|e| e["name"] == "newdir"),
+            "newdir must appear in listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn fs_mkdir_rejects_path_traversal() {
+        let (_dir, state, _root) = build_state_with_real_projects_root("alice", "pw");
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        let body = serde_json::json!({ "path": "../evil" }).to_string();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/fs/mkdir")
+                    .header("content-type", "application/json")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "PATH_ESCAPE");
+    }
+
+    // ── files/raw tests (Task 4.8) ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn files_raw_without_cookie_is_401() {
+        let (_dir, state, _root) = build_state_with_real_projects_root("alice", "pw");
+        let app = main_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/files/raw?project_path=proj&path=file.md")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn files_raw_returns_content_with_correct_content_type() {
+        let (_dir, state, projects_root) =
+            build_state_with_real_projects_root("alice", "pw");
+        // Create a minimal project with a markdown file.
+        let proj_dir = projects_root.join("proj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(proj_dir.join("schema.md"), b"# Schema\n").unwrap();
+        std::fs::write(proj_dir.join("README.md"), b"# Hello\n").unwrap();
+
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/files/raw?project_path=proj&path=README.md")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .expect("content-type present")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(ct.contains("markdown") || ct.contains("text"), "expected text or markdown content-type, got {ct}");
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        assert!(body.starts_with(b"# Hello"));
+    }
+
+    #[tokio::test]
+    async fn files_raw_rejects_path_traversal() {
+        let (_dir, state, projects_root) =
+            build_state_with_real_projects_root("alice", "pw");
+        // Create the project dir so the project_path resolves.
+        let proj_dir = projects_root.join("proj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(proj_dir.join("schema.md"), b"# Schema\n").unwrap();
+
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/files/raw?project_path=proj&path=../../../etc/passwd")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "PATH_ESCAPE");
+    }
+
+    #[tokio::test]
+    async fn files_raw_returns_404_for_missing_file() {
+        let (_dir, state, projects_root) =
+            build_state_with_real_projects_root("alice", "pw");
+        let proj_dir = projects_root.join("proj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(proj_dir.join("schema.md"), b"# Schema\n").unwrap();
+
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/files/raw?project_path=proj&path=nonexistent.md")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "NOT_FOUND");
     }
 }
