@@ -8,5 +8,6 @@
 //! emitted via the `EventSink` trait in `core::events`.
 
 pub mod events;
+pub mod extract;
 pub mod search;
 pub mod vectorstore;

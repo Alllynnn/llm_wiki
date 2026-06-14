@@ -390,12 +390,13 @@ fn extract_pdf_text(path: &str, include_images: bool) -> Result<String, String> 
                     Some(&media_dir),
                     &url_prefix,
                     &ExtractOptions::default(),
-                );
+                )
+                .map_err(|e| e.to_string());
             }
         }
     }
 
-    extract_pdf_markdown(path, None, "", &ExtractOptions::default())
+    extract_pdf_markdown(path, None, "", &ExtractOptions::default()).map_err(|e| e.to_string())
 }
 
 /// Extract text from Office Open XML formats, converting to Markdown.
