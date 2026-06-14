@@ -16,7 +16,7 @@ pub enum SessionError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionId(pub String);
+pub struct SessionId(String);
 
 impl SessionId {
     pub fn new() -> Self {
@@ -64,7 +64,8 @@ impl Sessions {
         let bytes = self.db.get(id.as_bytes()).ok().flatten()?;
         let record: SessionRecord = bincode::deserialize(&bytes).ok()?;
         if record.expires_at_unix <= now_unix() {
-            // Lazy expiry — fire-and-forget removal.
+            // Lazy expiry — fire-and-forget removal. No flush: losing this
+            // remove on crash is safe; the next lookup will re-expire it.
             let _ = self.db.remove(id.as_bytes());
             return None;
         }
