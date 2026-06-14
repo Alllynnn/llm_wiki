@@ -11,9 +11,11 @@ pub mod auth;
 
 use std::sync::Arc;
 
+use axum::middleware::from_fn_with_state;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::json;
+use tower_cookies::CookieManagerLayer;
 
 use crate::auth::sessions::Sessions;
 use crate::auth::users::Users;
@@ -30,13 +32,19 @@ pub struct AppState {
     pub config: Arc<ServerConfig>,
 }
 
-/// The main authenticated router. Auth middleware is layered on by the
-/// caller in `bin/llm_wiki_server.rs` so the same router can be mounted
-/// twice — once with auth, once without (legacy 127.0.0.1:19828).
 pub fn main_router(state: AppState) -> Router {
-    Router::new()
+    let authed = Router::new()
         .route("/api/v1/health", get(health))
-        .with_state(state)
+        .merge(auth::auth_router())
+        // Session middleware: extract cookie, inject User if valid.
+        .route_layer(from_fn_with_state(state.clone(), auth::session_middleware))
+        .with_state(state.clone());
+
+    Router::new()
+        .merge(authed)
+        // Cookie layer needs to be outermost so cookies are parsed before
+        // the session middleware runs.
+        .layer(CookieManagerLayer::new())
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -51,6 +59,8 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
     use tower::ServiceExt; // for `oneshot`
+
+    use crate::auth::users::hash_password;
 
     fn build_state() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
@@ -77,6 +87,48 @@ mod tests {
         (dir, state)
     }
 
+    fn build_state_with_user(
+        username: &str,
+        password: &str,
+    ) -> (TempDir, AppState) {
+        let dir = TempDir::new().unwrap();
+        let hash = hash_password(password).unwrap();
+        let users_path = dir.path().join("users.toml");
+        std::fs::write(
+            &users_path,
+            format!("[users.{username}]\npassword_hash = \"{hash}\"\n"),
+        )
+        .unwrap();
+        let users = Users::load(&users_path).unwrap();
+        let sessions = Sessions::open(&dir.path().join("sessions")).unwrap();
+        let user_data = UserData::new(dir.path().to_path_buf());
+        let bus = SessionBus::new();
+        let cfg = ServerConfig {
+            port: 8080,
+            projects_root: PathBuf::from("./projects"),
+            data_root: dir.path().to_path_buf(),
+            legacy_19828_enabled: true,
+            session_cookie_name: "test_session".into(),
+        };
+        let state = AppState {
+            users: Arc::new(users),
+            sessions,
+            user_data,
+            session_bus: bus,
+            config: Arc::new(cfg),
+        };
+        (dir, state)
+    }
+
+    fn extract_set_cookie(resp: &axum::response::Response) -> String {
+        resp.headers()
+            .get(axum::http::header::SET_COOKIE)
+            .expect("set-cookie present")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
     #[tokio::test]
     async fn health_endpoint_returns_ok() {
         let (_dir, state) = build_state();
@@ -89,5 +141,136 @@ mod tests {
         let body = to_bytes(resp.into_body(), 4096).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn whoami_without_cookie_is_401() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auth/whoami")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn login_with_wrong_password_is_401() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state);
+        let body = r#"{"username":"alice","password":"wrong"}"#;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "INVALID_CREDENTIALS");
+    }
+
+    #[tokio::test]
+    async fn login_then_whoami_with_cookie_works() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state.clone());
+
+        let body = r#"{"username":"alice","password":"pw"}"#;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let set_cookie = extract_set_cookie(&resp);
+        assert!(set_cookie.contains("test_session="));
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Lax"));
+        let cookie_value = set_cookie.split(';').next().unwrap().to_string();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auth/whoami")
+                    .header("cookie", cookie_value)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["user_id"], "alice");
+        assert_eq!(v["username"], "alice");
+        assert!(v["recently_opened"].is_array());
+    }
+
+    #[tokio::test]
+    async fn logout_invalidates_session_immediately() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state.clone());
+
+        // log in
+        let body = r#"{"username":"alice","password":"pw"}"#;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookie = extract_set_cookie(&resp).split(';').next().unwrap().to_string();
+
+        // log out
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/logout")
+                    .header("cookie", &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 204);
+
+        // whoami with the now-revoked cookie → 401
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auth/whoami")
+                    .header("cookie", &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
     }
 }

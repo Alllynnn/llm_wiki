@@ -82,7 +82,7 @@ parking_lot = "0.12"
 axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
-tower-cookies = "0.10"
+tower-cookies = "0.11"
 hyper = "1"
 rust-embed = "8"
 async-trait = "0.1"

@@ -1,14 +1,96 @@
 //! Session cookie middleware + `AuthUser` extractor.
 
-use axum::extract::{FromRequestParts, State};
+use axum::extract::{FromRequestParts, Json as ExtractJson, State};
 use axum::http::request::Parts;
+use axum::http::StatusCode;
 use axum::middleware::Next;
-use axum::response::Response;
-use tower_cookies::Cookies;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::json;
+use tower_cookies::{cookie::SameSite, Cookie, Cookies};
 
 use crate::auth::users::User;
 use crate::http::error::ApiError;
 use crate::http::AppState;
+
+// 30 days in seconds — matches Sessions DEFAULT_SESSION_TTL_SECS
+const COOKIE_MAX_AGE_SECS: i64 = 60 * 60 * 24 * 30;
+
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+pub fn auth_router() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/whoami", get(whoami))
+}
+
+async fn login(
+    State(state): State<AppState>,
+    cookies: Cookies,
+    ExtractJson(body): ExtractJson<LoginRequest>,
+) -> Result<axum::response::Response, ApiError> {
+    let user = state
+        .users
+        .verify_password(&body.username, &body.password)
+        .map_err(|_| ApiError::invalid_credentials())?;
+
+    let session_id = state
+        .sessions
+        .create(&user.id)
+        .map_err(|e| ApiError::internal(format!("could not create session: {e}")))?;
+
+    let cookie = Cookie::build((
+        state.config.session_cookie_name.clone(),
+        session_id.as_str().to_string(),
+    ))
+    .http_only(true)
+    .same_site(SameSite::Lax)
+    .max_age(tower_cookies::cookie::time::Duration::seconds(COOKIE_MAX_AGE_SECS))
+    .path("/")
+    .build();
+    cookies.add(cookie);
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({"user_id": user.id, "username": user.username})),
+    )
+        .into_response())
+}
+
+async fn logout(
+    State(state): State<AppState>,
+    cookies: Cookies,
+) -> Result<StatusCode, ApiError> {
+    if let Some(cookie) = cookies.get(&state.config.session_cookie_name) {
+        // Best-effort delete — even if sled errors, we still want to clear
+        // the client cookie below.
+        let _ = state.sessions.delete(cookie.value());
+    }
+    let mut empty = Cookie::new(state.config.session_cookie_name.clone(), "");
+    empty.set_path("/");
+    empty.set_max_age(tower_cookies::cookie::time::Duration::seconds(0));
+    cookies.add(empty);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn whoami(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> Json<serde_json::Value> {
+    let recently_opened = state.user_data.recently_opened(&user.id);
+    Json(json!({
+        "user_id": user.id,
+        "username": user.username,
+        "recently_opened": recently_opened,
+    }))
+}
 
 /// Extractor that yields the authenticated user, or 401 if missing.
 ///
