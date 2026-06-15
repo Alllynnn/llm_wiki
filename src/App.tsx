@@ -6,10 +6,9 @@ import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { BASE_FONT_SIZE_PX, useZoomStore } from "@/stores/zoom-store"
 import { listDirectory, openProject } from "@/commands/fs"
-import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMineruConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadSourceWatchConfig, loadApiConfig, loadGeneralConfig, loadZoomLevel } from "@/lib/project-store"
+import { getLastProject, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMineruConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadSourceWatchConfig, loadApiConfig, loadGeneralConfig, loadZoomLevel } from "@/lib/project-store"
 import { loadReviewItems, loadLintItems, loadChatHistory } from "@/lib/persist"
 import { setupAutoSave } from "@/lib/auto-save"
-import { startClipWatcher } from "@/lib/clip-watcher"
 import { AppLayout } from "@/components/layout/app-layout"
 import { WelcomeScreen } from "@/components/project/welcome-screen"
 import { CreateProjectDialog } from "@/components/project/create-project-dialog"
@@ -37,10 +36,10 @@ function App() {
   // auth: null = checking, false = unauthenticated, AuthUser = authenticated
   const [authUser, setAuthUser_] = useState<AuthUser | null | false>(null)
 
-  // Set up auto-save and clip watcher once on mount
+  // Set up auto-save once on mount. The Tauri-era clip watcher (polling the
+  // local Web Clipper daemon on :19827) is not part of the browser/LAN build.
   useEffect(() => {
     setupAutoSave()
-    startClipWatcher()
   }, [])
 
   useEffect(() => {
@@ -371,22 +370,6 @@ function App() {
           stopProjectFileSync().catch(() => {})
         }
       }).catch((err) => console.error("Failed to configure project file sync:", err))
-      // Notify local clip server of the current project + all recent projects
-      fetch("http://127.0.0.1:19827/project", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: proj.path }),
-      }).catch(() => {})
-
-      // Send all recent projects to clip server for extension project picker
-      getRecentProjects().then((recents) => {
-        const projects = recents.map((p) => ({ name: p.name, path: p.path }))
-        fetch("http://127.0.0.1:19827/projects", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ projects }),
-        }).catch(() => {})
-      }).catch(() => {})
       try {
         const tree = await listDirectory(proj.path)
         setFileTree(tree)
