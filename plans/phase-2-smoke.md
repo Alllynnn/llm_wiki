@@ -4,6 +4,13 @@ After Phase 2 lands, this runbook verifies end-to-end behavior of the new `llm-w
 
 ## Prereqs
 
+Define `$REPO` to the checkout path before running, e.g.:
+
+```bash
+export REPO="$HOME/code/llm-wiki"
+```
+
+
 - macOS with Rust toolchain at `~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/`.
 - Project at `$REPO`.
 - Release binary built: `cd src-tauri && cargo build --release --bin llm-wiki-server` (~6 min first time).
