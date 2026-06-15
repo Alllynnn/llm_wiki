@@ -2,15 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => {
   const resolvers: Array<(value: { queue: { version: number; tasks: Array<{ id: string; projectId: string; path: string; kind: "modified"; status: "pending"; createdAt: number; updatedAt: number; retryCount: number; needsRerun: boolean }> }; changedTasks: Array<{ id: string; projectId: string; path: string; kind: "modified"; status: "pending"; createdAt: number; updatedAt: number; retryCount: number; needsRerun: boolean }> }) => void> = []
-  const listeners: Record<string, (event: { payload: unknown }) => void> = {}
+  const listeners: Record<string, (payload: unknown) => void> = {}
   return {
-    listen: vi.fn(async (event: string, cb: (event: { payload: unknown }) => void) => {
+    subscribe: vi.fn((event: string, cb: (payload: unknown) => void) => {
       listeners[event] = cb
       return vi.fn(() => {
         delete listeners[event]
       })
     }),
-    emit: (event: string, payload: unknown) => listeners[event]?.({ payload }),
+    emit: (event: string, payload: unknown) => listeners[event]?.(payload),
     stopProjectFileWatcher: vi.fn(async () => undefined),
     rescanProjectFiles: vi.fn(async (projectId: string): Promise<{
       queue: {
@@ -92,8 +92,8 @@ const mocks = vi.hoisted(() => {
   }
 })
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: mocks.listen,
+vi.mock("@/lib/events", () => ({
+  subscribe: mocks.subscribe,
 }))
 
 vi.mock("@/commands/file-sync", () => ({
@@ -201,7 +201,7 @@ describe("project file sync", () => {
     void startProjectFileSync(project)
 
     await vi.waitFor(() => {
-      expect(mocks.listen).toHaveBeenCalledTimes(2)
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2)
     })
 
     mocks.emit("file-sync://changed", {
@@ -260,7 +260,7 @@ describe("project file sync", () => {
     void startProjectFileSync(project)
 
     await vi.waitFor(() => {
-      expect(mocks.listen).toHaveBeenCalledTimes(2)
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2)
     })
 
     mocks.emit("file-sync://changed", {
@@ -380,7 +380,7 @@ describe("project file sync", () => {
     void startProjectFileSync(project)
 
     await vi.waitFor(() => {
-      expect(mocks.listen).toHaveBeenCalledTimes(2)
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2)
     })
 
     const baseTask = {
@@ -418,7 +418,7 @@ describe("project file sync", () => {
     useWikiStore.getState().setProject(project)
     void startProjectFileSync(project)
     await vi.waitFor(() => {
-      expect(mocks.listen).toHaveBeenCalledTimes(2)
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2)
     })
 
     mocks.rescanProjectFiles.mockImplementation(async (projectId: string) => ({
@@ -558,7 +558,7 @@ describe("project file sync", () => {
 
     void startProjectFileSync(project)
     await vi.waitFor(() => {
-      expect(mocks.listen).toHaveBeenCalledTimes(2)
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2)
     })
 
     mocks.emit("file-sync://changed", {
@@ -627,7 +627,7 @@ describe("project file sync", () => {
 
     void startProjectFileSync(project)
     await vi.waitFor(() => {
-      expect(mocks.listen).toHaveBeenCalledTimes(2)
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2)
     })
 
     mocks.emit("file-sync://changed", {
@@ -693,7 +693,7 @@ describe("project file sync", () => {
 
     void startProjectFileSync(project)
     await vi.waitFor(() => {
-      expect(mocks.listen).toHaveBeenCalledTimes(2)
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2)
     })
 
     mocks.emit("file-sync://changed", {

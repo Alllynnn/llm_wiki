@@ -1,43 +1,34 @@
-import { load } from "@tauri-apps/plugin-store"
+import { getConfigKey, setConfigKey, deleteConfigKey } from "@/lib/user-config"
 import type { WikiProject } from "@/types/wiki"
 import type { ApiConfig, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, SourceWatchConfig } from "@/stores/wiki-store"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { DEFAULT_ZOOM_LEVEL, clampZoomLevel } from "@/stores/zoom-store"
 
-const STORE_NAME = "app-state.json"
 const RECENT_PROJECTS_KEY = "recentProjects"
 const LAST_PROJECT_KEY = "lastProject"
 
-async function getStore() {
-  return load(STORE_NAME, { autoSave: true, defaults: {} })
-}
-
 export async function getRecentProjects(): Promise<WikiProject[]> {
-  const store = await getStore()
-  const projects = await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)
+  const projects = await getConfigKey<WikiProject[]>(RECENT_PROJECTS_KEY)
   return projects ?? []
 }
 
 export async function getLastProject(): Promise<WikiProject | null> {
-  const store = await getStore()
-  const project = await store.get<WikiProject>(LAST_PROJECT_KEY)
+  const project = await getConfigKey<WikiProject>(LAST_PROJECT_KEY)
   return project ?? null
 }
 
 export async function saveLastProject(project: WikiProject): Promise<void> {
-  const store = await getStore()
-  await store.set(LAST_PROJECT_KEY, project)
+  await setConfigKey(LAST_PROJECT_KEY, project)
   await addToRecentProjects(project)
 }
 
 export async function addToRecentProjects(
   project: WikiProject
 ): Promise<void> {
-  const store = await getStore()
-  const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
+  const existing = (await getConfigKey<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
   const filtered = existing.filter((p) => p.path !== project.path)
   const updated = [project, ...filtered].slice(0, 10)
-  await store.set(RECENT_PROJECTS_KEY, updated)
+  await setConfigKey(RECENT_PROJECTS_KEY, updated)
 }
 
 const LLM_CONFIG_KEY = "llmConfig"
@@ -45,69 +36,57 @@ const PROVIDER_CONFIGS_KEY = "providerConfigs"
 const ACTIVE_PRESET_KEY = "activePresetId"
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(LLM_CONFIG_KEY, config)
+  await setConfigKey(LLM_CONFIG_KEY, config)
 }
 
 export async function loadLlmConfig(): Promise<LlmConfig | null> {
-  const store = await getStore()
-  return (await store.get<LlmConfig>(LLM_CONFIG_KEY)) ?? null
+  return (await getConfigKey<LlmConfig>(LLM_CONFIG_KEY)) ?? null
 }
 
 export async function saveProviderConfigs(configs: ProviderConfigs): Promise<void> {
-  const store = await getStore()
-  await store.set(PROVIDER_CONFIGS_KEY, configs)
+  await setConfigKey(PROVIDER_CONFIGS_KEY, configs)
 }
 
 export async function loadProviderConfigs(): Promise<ProviderConfigs | null> {
-  const store = await getStore()
-  return (await store.get<ProviderConfigs>(PROVIDER_CONFIGS_KEY)) ?? null
+  return (await getConfigKey<ProviderConfigs>(PROVIDER_CONFIGS_KEY)) ?? null
 }
 
 export async function saveActivePresetId(id: string | null): Promise<void> {
-  const store = await getStore()
-  await store.set(ACTIVE_PRESET_KEY, id)
+  await setConfigKey(ACTIVE_PRESET_KEY, id)
 }
 
 export async function loadActivePresetId(): Promise<string | null> {
-  const store = await getStore()
-  return (await store.get<string | null>(ACTIVE_PRESET_KEY)) ?? null
+  return (await getConfigKey<string | null>(ACTIVE_PRESET_KEY)) ?? null
 }
 
 const SEARCH_API_KEY = "searchApiConfig"
 
 export async function saveSearchApiConfig(config: SearchApiConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(SEARCH_API_KEY, config)
+  await setConfigKey(SEARCH_API_KEY, config)
 }
 
 export async function loadSearchApiConfig(): Promise<SearchApiConfig | null> {
-  const store = await getStore()
-  return (await store.get<SearchApiConfig>(SEARCH_API_KEY)) ?? null
+  return (await getConfigKey<SearchApiConfig>(SEARCH_API_KEY)) ?? null
 }
 
 const EMBEDDING_KEY = "embeddingConfig"
 
 export async function saveEmbeddingConfig(config: EmbeddingConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(EMBEDDING_KEY, config)
+  await setConfigKey(EMBEDDING_KEY, config)
 }
 
 export async function loadEmbeddingConfig(): Promise<EmbeddingConfig | null> {
-  const store = await getStore()
-  return (await store.get<EmbeddingConfig>(EMBEDDING_KEY)) ?? null
+  return (await getConfigKey<EmbeddingConfig>(EMBEDDING_KEY)) ?? null
 }
 
 const MULTIMODAL_KEY = "multimodalConfig"
 
 export async function saveMultimodalConfig(config: MultimodalConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(MULTIMODAL_KEY, config)
+  await setConfigKey(MULTIMODAL_KEY, config)
 }
 
 export async function loadMultimodalConfig(): Promise<MultimodalConfig | null> {
-  const store = await getStore()
-  return (await store.get<MultimodalConfig>(MULTIMODAL_KEY)) ?? null
+  return (await getConfigKey<MultimodalConfig>(MULTIMODAL_KEY)) ?? null
 }
 
 const MINERU_KEY = "mineruConfig"
@@ -132,13 +111,11 @@ export const __projectStoreTest = {
 }
 
 export async function saveMineruConfig(config: MineruConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(MINERU_KEY, normalizeMineruConfig(config))
+  await setConfigKey(MINERU_KEY, normalizeMineruConfig(config))
 }
 
 export async function loadMineruConfig(): Promise<MineruConfig | null> {
-  const store = await getStore()
-  const config = await store.get<MineruConfig>(MINERU_KEY)
+  const config = await getConfigKey<MineruConfig>(MINERU_KEY)
   return config ? normalizeMineruConfig(config) : null
 }
 
@@ -149,22 +126,12 @@ export async function loadMineruConfig(): Promise<MineruConfig | null> {
 const PROXY_CONFIG_KEY = "proxyConfig"
 
 export async function saveProxyConfig(config: ProxyConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(PROXY_CONFIG_KEY, config)
-  // Force-flush to disk. The store is opened with `autoSave: true`,
-  // which is a 100ms debounce — not an immediate write. For most
-  // settings that's fine, but the proxy config is on the startup
-  // critical path: the Rust setup hook reads `app-state.json` on
-  // launch to apply HTTP_PROXY / HTTPS_PROXY / NO_PROXY. If the
-  // user saves and quits within the debounce window the disk
-  // value would lag behind in-memory, and the next launch would
-  // boot with the wrong proxy.
-  await store.save()
+  await setConfigKey(PROXY_CONFIG_KEY, config)
+  // Note: the server persists immediately on every PUT — no explicit flush needed.
 }
 
 export async function loadProxyConfig(): Promise<ProxyConfig | null> {
-  const store = await getStore()
-  return (await store.get<ProxyConfig>(PROXY_CONFIG_KEY)) ?? null
+  return (await getConfigKey<ProxyConfig>(PROXY_CONFIG_KEY)) ?? null
 }
 
 // Local API server config. KEY MUST stay `apiConfig` — the Rust
@@ -174,19 +141,12 @@ export async function loadProxyConfig(): Promise<ProxyConfig | null> {
 const API_CONFIG_KEY = "apiConfig"
 
 export async function saveApiConfig(config: ApiConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(API_CONFIG_KEY, config)
-  // Force-flush. The 100ms debounce default is fine for cosmetic
-  // settings, but the API token is on a security hot path — a user
-  // generates one, hits Save, then immediately curls the API from
-  // another terminal. We want the disk file to match in-memory
-  // state before the next request reads it.
-  await store.save()
+  await setConfigKey(API_CONFIG_KEY, config)
+  // Note: the server persists immediately on every PUT — no explicit flush needed.
 }
 
 export async function loadApiConfig(): Promise<ApiConfig | null> {
-  const store = await getStore()
-  return (await store.get<ApiConfig>(API_CONFIG_KEY)) ?? null
+  return (await getConfigKey<ApiConfig>(API_CONFIG_KEY)) ?? null
 }
 
 const GENERAL_CONFIG_KEY = "generalConfig"
@@ -206,58 +166,50 @@ export function normalizeGeneralConfig(config?: Partial<GeneralConfig> | null): 
 }
 
 export async function saveGeneralConfig(config: GeneralConfig): Promise<void> {
-  const store = await getStore()
-  await store.set(GENERAL_CONFIG_KEY, normalizeGeneralConfig(config))
-  await store.save()
+  await setConfigKey(GENERAL_CONFIG_KEY, normalizeGeneralConfig(config))
 }
 
 export async function loadGeneralConfig(): Promise<GeneralConfig> {
-  const store = await getStore()
-  const config = await store.get<Partial<GeneralConfig>>(GENERAL_CONFIG_KEY)
+  const config = await getConfigKey<Partial<GeneralConfig>>(GENERAL_CONFIG_KEY)
   return normalizeGeneralConfig(config)
 }
 
 export async function removeFromRecentProjects(
   path: string
 ): Promise<void> {
-  const store = await getStore()
-  const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
+  const existing = (await getConfigKey<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
   const updated = existing.filter((p) => p.path !== path)
-  await store.set(RECENT_PROJECTS_KEY, updated)
+  await setConfigKey(RECENT_PROJECTS_KEY, updated)
   // ALSO clear the last-project pointer if it points at the project
   // we just removed. Without this, App.tsx's startup auto-open
   // (`getLastProject()` → `openProject()` → `saveLastProject()`)
   // re-adds the removed entry back to recents on the next launch,
   // making the delete look like it didn't take. Reported by user
   // as "deleted project comes back after restart."
-  const last = await store.get<WikiProject>(LAST_PROJECT_KEY)
+  const last = await getConfigKey<WikiProject>(LAST_PROJECT_KEY)
   if (last && last.path === path) {
-    await store.delete(LAST_PROJECT_KEY)
+    await deleteConfigKey(LAST_PROJECT_KEY)
   }
 }
 
 const LANGUAGE_KEY = "language"
 
 export async function saveLanguage(lang: string): Promise<void> {
-  const store = await getStore()
-  await store.set(LANGUAGE_KEY, lang)
+  await setConfigKey(LANGUAGE_KEY, lang)
 }
 
 export async function loadLanguage(): Promise<string | null> {
-  const store = await getStore()
-  return (await store.get<string>(LANGUAGE_KEY)) ?? null
+  return (await getConfigKey<string>(LANGUAGE_KEY)) ?? null
 }
 
 const THEME_KEY = "theme"
 
 export async function saveTheme(theme: "light" | "dark" | "system"): Promise<void> {
-  const store = await getStore()
-  await store.set(THEME_KEY, theme)
+  await setConfigKey(THEME_KEY, theme)
 }
 
 export async function loadTheme(): Promise<"light" | "dark" | "system" | null> {
-  const store = await getStore()
-  return (await store.get<"light" | "dark" | "system">(THEME_KEY)) ?? null
+  return (await getConfigKey<"light" | "dark" | "system">(THEME_KEY)) ?? null
 }
 
 const OUTPUT_LANGUAGE_KEY = "outputLanguage"
@@ -266,37 +218,33 @@ const PROJECT_FILE_SYNC_KEY = "projectFileSyncEnabled"
 const SOURCE_WATCH_CONFIG_KEY = "sourceWatchConfig"
 
 export async function saveOutputLanguage(lang: OutputLanguage, projectId?: string): Promise<void> {
-  const store = await getStore()
   if (projectId) {
-    const existing = (await store.get<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)) ?? {}
-    await store.set(PROJECT_OUTPUT_LANGUAGE_KEY, { ...existing, [projectId]: lang })
+    const existing = (await getConfigKey<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)) ?? {}
+    await setConfigKey(PROJECT_OUTPUT_LANGUAGE_KEY, { ...existing, [projectId]: lang })
   }
-  await store.set(OUTPUT_LANGUAGE_KEY, lang)
+  await setConfigKey(OUTPUT_LANGUAGE_KEY, lang)
 }
 
 export async function loadOutputLanguage(projectId?: string): Promise<OutputLanguage | null> {
-  const store = await getStore()
   if (projectId) {
-    const projectLanguages = await store.get<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)
+    const projectLanguages = await getConfigKey<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)
     return projectLanguages?.[projectId] ?? null
   }
-  return (await store.get<OutputLanguage>(OUTPUT_LANGUAGE_KEY)) ?? null
+  return (await getConfigKey<OutputLanguage>(OUTPUT_LANGUAGE_KEY)) ?? null
 }
 
 export async function saveProjectFileSyncEnabled(enabled: boolean, projectId?: string): Promise<void> {
-  const store = await getStore()
   if (projectId) {
-    const existing = (await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
-    await store.set(PROJECT_FILE_SYNC_KEY, { ...existing, [projectId]: enabled })
+    const existing = (await getConfigKey<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
+    await setConfigKey(PROJECT_FILE_SYNC_KEY, { ...existing, [projectId]: enabled })
     return
   }
-  const existing = (await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
-  await store.set(PROJECT_FILE_SYNC_KEY, { ...existing, default: enabled })
+  const existing = (await getConfigKey<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
+  await setConfigKey(PROJECT_FILE_SYNC_KEY, { ...existing, default: enabled })
 }
 
 export async function loadProjectFileSyncEnabled(projectId?: string): Promise<boolean> {
-  const store = await getStore()
-  const settings = await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)
+  const settings = await getConfigKey<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)
   if (projectId && settings && typeof settings[projectId] === "boolean") {
     return settings[projectId]
   }
@@ -307,19 +255,16 @@ export async function loadProjectFileSyncEnabled(projectId?: string): Promise<bo
 }
 
 export async function saveSourceWatchConfig(config: SourceWatchConfig, projectId?: string): Promise<void> {
-  const store = await getStore()
   const normalized = normalizeSourceWatchConfig(config)
-  const existing = (await store.get<Record<string, SourceWatchConfig>>(SOURCE_WATCH_CONFIG_KEY)) ?? {}
-  await store.set(SOURCE_WATCH_CONFIG_KEY, {
+  const existing = (await getConfigKey<Record<string, SourceWatchConfig>>(SOURCE_WATCH_CONFIG_KEY)) ?? {}
+  await setConfigKey(SOURCE_WATCH_CONFIG_KEY, {
     ...existing,
     [projectId ?? "default"]: normalized,
   })
-  await store.save()
 }
 
 export async function loadSourceWatchConfig(projectId?: string): Promise<SourceWatchConfig> {
-  const store = await getStore()
-  const settings = await store.get<Record<string, SourceWatchConfig>>(SOURCE_WATCH_CONFIG_KEY)
+  const settings = await getConfigKey<Record<string, SourceWatchConfig>>(SOURCE_WATCH_CONFIG_KEY)
   const config = projectId ? settings?.[projectId] : undefined
   if (config) return normalizeSourceWatchConfig(config)
   if (settings?.default) return normalizeSourceWatchConfig(settings.default)
@@ -346,27 +291,20 @@ export interface PersistedUpdateCheckState {
 export async function saveUpdateCheckState(
   state: PersistedUpdateCheckState,
 ): Promise<void> {
-  const store = await getStore()
-  await store.set(UPDATE_CHECK_STATE_KEY, state)
+  await setConfigKey(UPDATE_CHECK_STATE_KEY, state)
 }
 
 export async function loadUpdateCheckState(): Promise<PersistedUpdateCheckState | null> {
-  const store = await getStore()
-  return (
-    (await store.get<PersistedUpdateCheckState>(UPDATE_CHECK_STATE_KEY)) ?? null
-  )
+  return (await getConfigKey<PersistedUpdateCheckState>(UPDATE_CHECK_STATE_KEY)) ?? null
 }
 
 const ZOOM_LEVEL_KEY = "zoomLevel"
 
 export async function saveZoomLevel(level: number): Promise<void> {
-  const store = await getStore()
-  await store.set(ZOOM_LEVEL_KEY, normalizeZoomLevel(level))
-  await store.save()
+  await setConfigKey(ZOOM_LEVEL_KEY, normalizeZoomLevel(level))
 }
 
 export async function loadZoomLevel(): Promise<number> {
-  const store = await getStore()
-  const level = await store.get<number>(ZOOM_LEVEL_KEY)
+  const level = await getConfigKey<number>(ZOOM_LEVEL_KEY)
   return normalizeZoomLevel(level)
 }
