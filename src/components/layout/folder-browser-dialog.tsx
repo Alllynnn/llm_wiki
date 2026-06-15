@@ -29,7 +29,7 @@ export interface FolderBrowserDialogProps {
   open: boolean
   onClose: () => void
   onSelect: (path: string) => void
-  /** Optional starting path; defaults to root "/" */
+  /** Optional starting path; defaults to root (empty string = projects_root) */
   initialPath?: string
   /** Title shown at the top of the dialog */
   title?: string
@@ -41,9 +41,12 @@ export function FolderBrowserDialog({
   open,
   onClose,
   onSelect,
-  initialPath = "/",
+  initialPath = "",
   title = "Select Folder",
 }: FolderBrowserDialogProps) {
+  // The server's `/api/v1/fs/list` API uses "" for the projects_root itself
+  // and non-leading-slash relative paths for subdirectories (e.g. "research/thesis").
+  // We never send a leading "/" — that would be rejected as PATH_ESCAPE.
   const [currentPath, setCurrentPath] = useState(initialPath)
   const [entries, setEntries] = useState<FsEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -91,14 +94,15 @@ export function FolderBrowserDialog({
   // ── Breadcrumb ──────────────────────────────────────────────────────────────
 
   const breadcrumbSegments = (() => {
-    // Build [{label, path}] from root down to currentPath
-    const normalized = currentPath.replace(/\/+$/, "") || "/"
-    if (normalized === "/") return [{ label: "/", path: "/" }]
-    const parts = normalized.split("/").filter(Boolean)
-    const segs: { label: string; path: string }[] = [{ label: "/", path: "/" }]
+    // Build [{label, path}] from root down to currentPath. `path` values are
+    // what we send to the API: "" for root, "research", "research/thesis", etc.
+    const trimmed = currentPath.replace(/^\/+/, "").replace(/\/+$/, "")
+    if (trimmed === "") return [{ label: "projects root", path: "" }]
+    const parts = trimmed.split("/").filter(Boolean)
+    const segs: { label: string; path: string }[] = [{ label: "projects root", path: "" }]
     let accumulated = ""
     for (const part of parts) {
-      accumulated += "/" + part
+      accumulated = accumulated ? `${accumulated}/${part}` : part
       segs.push({ label: part, path: accumulated })
     }
     return segs
@@ -112,9 +116,10 @@ export function FolderBrowserDialog({
   }
 
   function navigateUp() {
-    const normalized = currentPath.replace(/\/+$/, "") || "/"
-    if (normalized === "/") return
-    const parent = normalized.substring(0, normalized.lastIndexOf("/")) || "/"
+    const trimmed = currentPath.replace(/^\/+/, "").replace(/\/+$/, "")
+    if (trimmed === "") return
+    const idx = trimmed.lastIndexOf("/")
+    const parent = idx === -1 ? "" : trimmed.substring(0, idx)
     navigateTo(parent)
   }
 
@@ -126,8 +131,8 @@ export function FolderBrowserDialog({
       setCreateError("Folder name cannot be empty.")
       return
     }
-    const sep = currentPath.endsWith("/") ? "" : "/"
-    const newPath = currentPath === "/" ? `/${name}` : `${currentPath}${sep}${name}`
+    const trimmed = currentPath.replace(/^\/+/, "").replace(/\/+$/, "")
+    const newPath = trimmed === "" ? name : `${trimmed}/${name}`
     setCreating(true)
     setCreateError(null)
     try {
@@ -200,11 +205,10 @@ export function FolderBrowserDialog({
                     type="button"
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted/60 text-left"
                     onClick={() => {
-                      const sep = currentPath.endsWith("/") ? "" : "/"
-                      const next =
-                        currentPath === "/"
-                          ? `/${entry.name}`
-                          : `${currentPath}${sep}${entry.name}`
+                      const trimmed = currentPath
+                        .replace(/^\/+/, "")
+                        .replace(/\/+$/, "")
+                      const next = trimmed === "" ? entry.name : `${trimmed}/${entry.name}`
                       navigateTo(next)
                     }}
                   >
@@ -290,7 +294,7 @@ export function FolderBrowserDialog({
             variant="outline"
             size="sm"
             onClick={navigateUp}
-            disabled={currentPath === "/"}
+            disabled={currentPath === "" || currentPath === "/"}
           >
             Up
           </Button>

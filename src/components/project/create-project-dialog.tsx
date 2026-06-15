@@ -6,7 +6,6 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { FolderOpen } from "lucide-react"
 import { createProject, writeFile, createDirectory } from "@/commands/fs"
 import { getTemplate } from "@/lib/templates"
 import { TemplatePicker } from "@/components/project/template-picker"
@@ -15,7 +14,6 @@ import { normalizePath } from "@/lib/path-utils"
 import { OUTPUT_LANGUAGE_OPTIONS } from "@/lib/output-language-options"
 import { useWikiStore, type OutputLanguage } from "@/stores/wiki-store"
 import { saveOutputLanguage } from "@/lib/project-store"
-import { FolderBrowserDialog } from "@/components/layout/folder-browser-dialog"
 
 interface CreateProjectDialogProps {
   open: boolean
@@ -26,7 +24,6 @@ interface CreateProjectDialogProps {
 export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: CreateProjectDialogProps) {
   const { t } = useTranslation()
   const [name, setName] = useState("")
-  const [path, setPath] = useState("")
   const [selectedTemplate, setSelectedTemplate] = useState("general")
   // Empty string = "user hasn't picked yet"; we validate this on
   // submit so a fresh project never starts in implicit auto-detect
@@ -36,15 +33,10 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
   const [language, setLanguage] = useState<string>("")
   const [error, setError] = useState("")
   const [creating, setCreating] = useState(false)
-  const [showBrowser, setShowBrowser] = useState(false)
   const setOutputLanguage = useWikiStore((s) => s.setOutputLanguage)
 
-  function handleBrowse() {
-    setShowBrowser(true)
-  }
-
   async function handleCreate() {
-    if (!name.trim() || !path.trim()) {
+    if (!name.trim()) {
       setError(t("project.errorNameRequired"))
       return
     }
@@ -55,7 +47,10 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
     setCreating(true)
     setError("")
     try {
-      const project = await createProject(name.trim(), path.trim())
+      // Second arg (`path`) is ignored by the HTTP backend; the server
+      // creates the project directly under LLM_WIKI_PROJECTS_ROOT. We pass
+      // an empty string for backward-compatibility with the wrapper signature.
+      const project = await createProject(name.trim(), "")
       const pp = normalizePath(project.path)
 
       const template = getTemplate(selectedTemplate)
@@ -76,7 +71,6 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
       onCreated(project)
       onOpenChange(false)
       setName("")
-      setPath("")
       setSelectedTemplate("general")
       setLanguage("")
     } catch (err) {
@@ -87,13 +81,6 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
   }
 
   return (
-    <>
-    <FolderBrowserDialog
-      open={showBrowser}
-      onClose={() => setShowBrowser(false)}
-      onSelect={(selectedPath) => setPath(selectedPath)}
-      title={t("project.browse")}
-    />
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[90vh] grid-rows-[auto_1fr_auto] overflow-hidden">
         <DialogHeader>
@@ -141,15 +128,13 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
               {t("project.aiOutputLanguageHint")}
             </p>
           </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="path">{t("project.parentDir")}</Label>
-            <div className="flex gap-2">
-              <Input id="path" value={path} onChange={(e) => setPath(e.target.value)} placeholder={t("project.parentDirPlaceholder")} className="flex-1" />
-              <Button variant="outline" size="icon" onClick={handleBrowse} type="button">
-                <FolderOpen className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
+          {/*
+            * The parent directory is fixed server-side via the
+            * LLM_WIKI_PROJECTS_ROOT environment variable. The new project
+            * always lands at <projects_root>/<name>. No path picker is
+            * needed in the browser model. (The desktop UI's "Parent
+            * Directory" field is intentionally omitted here.)
+            */}
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>
@@ -158,6 +143,5 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    </>
   )
 }
