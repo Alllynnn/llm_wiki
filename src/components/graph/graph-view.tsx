@@ -1304,10 +1304,10 @@ export function GraphView() {
                                 boxShadow: `0 0 4px ${hexToRgba(isHidden ? "#94a3b8" : nodeColor(type), 0.4)}`,
                               }}
                             />
-                            <span className={hoveredType === type ? "text-foreground font-medium" : "text-muted-foreground"}>
+                            <span className={hoveredType === type ? "text-foreground font-medium" : "text-foreground/85"}>
                               {label}
                             </span>
-                            <span className="text-muted-foreground/60 ml-auto">{typeCounts[type]}</span>
+                            <span className="text-muted-foreground ml-auto">{typeCounts[type]}</span>
                             {isHidden && <span className="text-muted-foreground/60 text-[10px]">{t("graph.hidden")}</span>}
                           </div>
                         )
@@ -1329,10 +1329,10 @@ export function GraphView() {
                           boxShadow: `0 0 4px ${hexToRgba(COMMUNITY_COLORS[c.id % COMMUNITY_COLORS.length], 0.4)}`,
                         }}
                       />
-                      <span className="text-muted-foreground truncate" title={c.topNodes.join(", ")}>
+                      <span className="text-foreground/85 truncate" title={c.topNodes.join(", ")}>
                         {c.topNodes[0] ?? `${t("graph.cluster", { id: c.id })}`}
                       </span>
-                      <span className="text-muted-foreground/60 ml-auto shrink-0">{c.nodeCount}</span>
+                      <span className="text-muted-foreground ml-auto shrink-0">{c.nodeCount}</span>
                       {c.cohesion < 0.15 && c.nodeCount >= 3 && (
                         <span className="text-amber-500 shrink-0" title={`Low cohesion: ${c.cohesion.toFixed(2)}`}>!</span>
                       )}
