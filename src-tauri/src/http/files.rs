@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::AppState;
-use crate::storage::paths::{resolve_under, PathError};
+use crate::storage::paths::{resolve_under, resolve_project_path, PathError};
 
 pub fn files_router() -> Router<AppState> {
     Router::new().route("/api/v1/files/raw", get(raw))
@@ -29,7 +29,7 @@ async fn raw(
     Query(q): Query<RawQuery>,
 ) -> Result<Response, ApiError> {
     let project_root =
-        resolve_under(&state.config.projects_root, &q.project_path).map_err(|e| {
+        resolve_project_path(&state.config.projects_root, &q.project_path).map_err(|e| {
             ApiError::bad_request("PATH_ESCAPE", e.to_string())
                 .with_details(serde_json::json!({ "requested": q.project_path }))
         })?;

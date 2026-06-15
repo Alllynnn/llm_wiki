@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 use crate::http::error::ApiError;
 use crate::http::AppState;
-use crate::storage::paths::{resolve_under, PathError};
+use crate::storage::paths::{resolve_under, resolve_project_path, PathError};
 
 pub fn agent_router() -> Router<AppState> {
     Router::new()
@@ -86,7 +86,7 @@ async fn search(
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let project_root =
-        resolve_under(&state.config.projects_root, &req.project_path).map_err(|e| {
+        resolve_project_path(&state.config.projects_root, &req.project_path).map_err(|e| {
             ApiError::bad_request("PATH_ESCAPE", e.to_string())
                 .with_details(serde_json::json!({ "requested": req.project_path }))
         })?;
@@ -118,7 +118,7 @@ async fn file(
     Query(q): Query<FileQuery>,
 ) -> Result<Response, ApiError> {
     let project_root =
-        resolve_under(&state.config.projects_root, &q.project_path).map_err(|e| {
+        resolve_project_path(&state.config.projects_root, &q.project_path).map_err(|e| {
             ApiError::bad_request("PATH_ESCAPE", e.to_string())
                 .with_details(serde_json::json!({ "requested": q.project_path }))
         })?;

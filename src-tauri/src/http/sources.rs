@@ -15,7 +15,7 @@ use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::session_event_sink::SessionEventSink;
 use crate::http::AppState;
-use crate::storage::paths::resolve_under;
+use crate::storage::paths::resolve_project_path;
 
 pub fn sources_router() -> Router<AppState> {
     Router::new()
@@ -40,7 +40,7 @@ async fn ingest(
     Json(req): Json<IngestRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let project_root =
-        resolve_under(&state.config.projects_root, &req.project_path).map_err(|e| {
+        resolve_project_path(&state.config.projects_root, &req.project_path).map_err(|e| {
             ApiError::bad_request("PATH_ESCAPE", e.to_string())
                 .with_details(serde_json::json!({ "requested": req.project_path }))
         })?;
@@ -101,7 +101,7 @@ async fn list(
     Query(q): Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let project_root =
-        resolve_under(&state.config.projects_root, &q.project_path).map_err(|e| {
+        resolve_project_path(&state.config.projects_root, &q.project_path).map_err(|e| {
             ApiError::bad_request("PATH_ESCAPE", e.to_string())
                 .with_details(serde_json::json!({ "requested": q.project_path }))
         })?;
@@ -164,7 +164,7 @@ async fn queue(
     Query(q): Query<QueueQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let project_root =
-        resolve_under(&state.config.projects_root, &q.project_path).map_err(|e| {
+        resolve_project_path(&state.config.projects_root, &q.project_path).map_err(|e| {
             ApiError::bad_request("PATH_ESCAPE", e.to_string())
                 .with_details(serde_json::json!({ "requested": q.project_path }))
         })?;

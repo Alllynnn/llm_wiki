@@ -9,7 +9,7 @@ use crate::core::project::{self, project_id_from_canonical_path};
 use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::AppState;
-use crate::storage::paths::resolve_under;
+use crate::storage::paths::resolve_project_path;
 
 pub fn projects_router() -> Router<AppState> {
     Router::new()
@@ -88,32 +88,10 @@ async fn open(
     Json(req): Json<OpenRequest>,
 ) -> Result<Json<ProjectResult>, ApiError> {
     let root = &state.config.projects_root;
-    // Accept either a relative path under `projects_root` OR an absolute path
-    // that happens to be inside `projects_root`. The "recently opened" UI in
-    // the React frontend stores absolute paths (a holdover from the desktop
-    // era); strip the projects_root prefix to get the relative form, then
-    // route through `resolve_under` for path safety.
-    let req_path: &str = &req.path;
-    let rel: String = if std::path::Path::new(req_path).is_absolute() {
-        match root.canonicalize().ok().and_then(|root_canon| {
-            std::path::Path::new(req_path)
-                .canonicalize()
-                .ok()
-                .and_then(|p| p.strip_prefix(&root_canon).ok().map(|s| s.to_path_buf()))
-        }) {
-            Some(rel_path) => rel_path.to_string_lossy().to_string(),
-            None => {
-                return Err(ApiError::bad_request(
-                    "PATH_ESCAPE",
-                    "absolute path is not under projects_root",
-                )
-                .with_details(serde_json::json!({ "requested": req.path })));
-            }
-        }
-    } else {
-        req_path.to_string()
-    };
-    let resolved = resolve_under(root, &rel).map_err(|e| {
+    // `resolve_project_path` tolerates both relative and absolute paths
+    // (the latter must be under projects_root). The frontend's Recent
+    // Projects UI sends absolute paths.
+    let resolved = resolve_project_path(root, &req.path).map_err(|e| {
         ApiError::bad_request("PATH_ESCAPE", e.to_string())
             .with_details(serde_json::json!({ "requested": req.path }))
     })?;

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::AppState;
-use crate::storage::paths::resolve_under;
+use crate::storage::paths::{resolve_under, resolve_project_path};
 
 pub fn wiki_router() -> Router<AppState> {
     Router::new()
@@ -30,7 +30,7 @@ fn etag_for(content: &[u8]) -> String {
 
 /// Resolve project root; the project directory must already exist.
 fn resolve_project_root(state: &AppState, project_path: &str) -> Result<std::path::PathBuf, ApiError> {
-    resolve_under(&state.config.projects_root, project_path).map_err(|e| {
+    resolve_project_path(&state.config.projects_root, project_path).map_err(|e| {
         ApiError::bad_request("PATH_ESCAPE", e.to_string())
             .with_details(serde_json::json!({ "requested": project_path }))
     })

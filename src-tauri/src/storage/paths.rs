@@ -54,6 +54,43 @@ pub fn resolve_under(root: &Path, requested: &str) -> Result<PathBuf, PathError>
     Ok(canon)
 }
 
+/// Like `resolve_under` but also accepts absolute paths that are themselves
+/// already under `root`. Useful for HTTP handlers that take a `project_path`
+/// from the frontend, since the Recent-Projects UI stores absolute paths
+/// (carried over from the desktop era).
+///
+/// Behavior:
+/// - Empty input → `PathError::Empty`.
+/// - Relative input → delegates to `resolve_under`.
+/// - Absolute input that canonicalizes to a child of `root` → returns that canonical path.
+/// - Absolute input outside `root` → `PathError::Escape`.
+/// - Anything else (missing, invalid) → the corresponding `PathError` variant.
+pub fn resolve_project_path(root: &Path, requested: &str) -> Result<PathBuf, PathError> {
+    let trimmed = requested.trim();
+    if trimmed.is_empty() {
+        return Err(PathError::Empty);
+    }
+
+    let req_path = Path::new(trimmed);
+    if !req_path.is_absolute() {
+        return resolve_under(root, trimmed);
+    }
+
+    // Absolute path: canonicalize both root and requested, then verify the
+    // requested path is under root.
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| PathError::Invalid(format!("root not canonicalizable: {e}")))?;
+    let canon = req_path.canonicalize().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => PathError::NotFound,
+        _ => PathError::Invalid(e.to_string()),
+    })?;
+    if !canon.starts_with(&root_canon) {
+        return Err(PathError::Escape);
+    }
+    Ok(canon)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
