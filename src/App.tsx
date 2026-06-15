@@ -13,6 +13,7 @@ import { startClipWatcher } from "@/lib/clip-watcher"
 import { AppLayout } from "@/components/layout/app-layout"
 import { WelcomeScreen } from "@/components/project/welcome-screen"
 import { CreateProjectDialog } from "@/components/project/create-project-dialog"
+import { OpenProjectDialog } from "@/components/project/open-project-dialog"
 import type { WikiProject } from "@/types/wiki"
 import { LoginView } from "@/components/auth/login-view"
 import type { AuthUser } from "@/components/auth/login-view"
@@ -31,6 +32,7 @@ function App() {
   const setActiveView = useWikiStore((s) => s.setActiveView)
   const zoomLevel = useZoomStore((s) => s.level)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const [showOpenDialog, setShowOpenDialog] = useState(false)
   const [loading, setLoading] = useState(true)
   // auth: null = checking, false = unauthenticated, AuthUser = authenticated
   const [authUser, setAuthUser_] = useState<AuthUser | null | false>(null)
@@ -442,13 +444,13 @@ function App() {
     }
   }
 
-  async function handleOpenProject() {
-    // TODO(5.7): replace with FolderBrowserDialog when implemented.
-    // Native folder-picker is Tauri-only; in the browser the user types the path.
-    const selected = window.prompt("Enter the path to the wiki project folder:")
-    if (!selected) return
+  function handleOpenProject() {
+    setShowOpenDialog(true)
+  }
+
+  async function handleOpenDialogSelect(path: string) {
     try {
-      const proj = await openProject(selected)
+      const proj = await openProject(path)
       await handleProjectOpened(proj)
     } catch (err) {
       window.alert(`Failed to open project: ${err}`)
@@ -501,6 +503,11 @@ function App() {
           open={showCreateDialog}
           onOpenChange={setShowCreateDialog}
           onCreated={handleProjectOpened}
+        />
+        <OpenProjectDialog
+          open={showOpenDialog}
+          onClose={() => setShowOpenDialog(false)}
+          onSelect={handleOpenDialogSelect}
         />
       </>
     )
