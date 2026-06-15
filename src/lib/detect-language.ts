@@ -236,18 +236,22 @@ function detectLatinLanguage(text: string): string | null {
   // ù ú ă ý) which made any French / Portuguese / Spanish / Italian / Romanian
   // text with common diacritics false-positive as Vietnamese.
   //
-  // Stage 1 (character class): Vietnamese-specific tone/hook/horn composites
-  // that don't appear in other major Latin-script languages detected here.
-  //
-  // Stage 2 (function word): require at least one common Vietnamese function
-  // word as well. A single stray VN tone-mark (e.g. inside a quoted Vietnamese
-  // name in an otherwise-English text, a footnote, or a transliterated proper
-  // noun) used to flip the whole document to Vietnamese mode. Matching German /
-  // French / Italian / Spanish style: char class is necessary but not
-  // sufficient.
-  if (/[ảạắằẳẵặấầẩẫậđẻẽẹếềểễệỉĩịỏọốồổỗộơớờởỡợủũụưứừửữựỷỹỵ]/.test(lower)
-      && /\b(và|của|là|được|không|cho|trong|với|này|những|một|các|có|để|người|từ)\b/.test(lower)) {
-    return "Vietnamese"
+  // The char class lists Vietnamese-specific tone/hook/horn composites that
+  // don't appear in other major Latin-script languages detected here. Earlier
+  // versions classified on a single match, but that flipped long English texts
+  // to Vietnamese on any stray transliterated proper noun. Two thresholds now:
+  //   - ≥2 distinct VN-exclusive matches OR
+  //   - ≥1 VN match AND a common Vietnamese function word
+  // matching the necessary-but-not-sufficient gate used for German / French /
+  // Italian / Spanish.
+  const vnCharRe = /[ảạắằẳẵặấầẩẫậđẻẽẹếềểễệỉĩịỏọốồổỗộơớờởỡợủũụưứừửữựỷỹỵ]/g
+  const vnMatches = lower.match(vnCharRe)
+  if (vnMatches) {
+    const distinctVn = new Set(vnMatches).size
+    const hasVnWord = /\b(và|của|là|được|không|cho|trong|với|này|những|một|các|có|để|người|từ|nước|hay|hoặc|thì|sẽ|đã|đang|còn)\b/.test(lower)
+    if (distinctVn >= 2 || (distinctVn >= 1 && hasVnWord)) {
+      return "Vietnamese"
+    }
   }
 
   // Turkish — require Turkish-unique chars (ğ, ı dotless, ş). Earlier versions
