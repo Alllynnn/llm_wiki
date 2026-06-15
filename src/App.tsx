@@ -14,6 +14,10 @@ import { AppLayout } from "@/components/layout/app-layout"
 import { WelcomeScreen } from "@/components/project/welcome-screen"
 import { CreateProjectDialog } from "@/components/project/create-project-dialog"
 import type { WikiProject } from "@/types/wiki"
+import { LoginView } from "@/components/auth/login-view"
+import type { AuthUser } from "@/components/auth/login-view"
+import { apiCall, ApiError } from "@/lib/api"
+import { setAuthUser } from "@/lib/auth"
 
 function applyDocumentZoom(level: number) {
   document.documentElement.style.fontSize = `${BASE_FONT_SIZE_PX * level}px`
@@ -28,6 +32,8 @@ function App() {
   const zoomLevel = useZoomStore((s) => s.level)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [loading, setLoading] = useState(true)
+  // auth: null = checking, false = unauthenticated, AuthUser = authenticated
+  const [authUser, setAuthUser_] = useState<AuthUser | null | false>(null)
 
   // Set up auto-save and clip watcher once on mount
   useEffect(() => {
@@ -189,6 +195,27 @@ function App() {
   useEffect(() => {
     async function init() {
       try {
+        // ── Auth gate ─────────────────────────────────────────────────────────
+        // Check if the user is already authenticated before loading any project
+        // state.  On 401 we render LoginView and stop here.
+        try {
+          const user = await apiCall<AuthUser>("GET", "/api/v1/auth/whoami")
+          setAuthUser_(user)
+          setAuthUser(user)
+        } catch (err) {
+          if (err instanceof ApiError && err.isUnauthenticated) {
+            setAuthUser_(false)
+            setLoading(false)
+            return
+          }
+          // Non-auth error (server down, network issue) — proceed anyway;
+          // individual API calls will fail and surface their own errors.
+          setAuthUser_(false)
+          setLoading(false)
+          return
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         const savedZoom = await loadZoomLevel()
         applyDocumentZoom(savedZoom)
         useZoomStore.getState().setLevel(savedZoom)
@@ -444,12 +471,22 @@ function App() {
     setSelectedFile(null)
   }
 
-  if (loading) {
+  function handleLogin(user: AuthUser) {
+    setAuthUser_(user)
+    setAuthUser(user)
+  }
+
+  if (loading || authUser === null) {
     return (
       <div className="flex h-full items-center justify-center bg-background text-muted-foreground">
         Loading...
       </div>
     )
+  }
+
+  // Not authenticated — show login gate
+  if (authUser === false) {
+    return <LoginView onLogin={handleLogin} />
   }
 
   if (!project) {
