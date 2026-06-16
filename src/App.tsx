@@ -108,89 +108,10 @@ function App() {
   // on every boot was just GitHub rate-limiting an unauthenticated
   // request to a repo we don't track. If a fork-level update
   // mechanism is ever added, wire it here.
-  useEffect(() => {
-    let cancelled = false
-    const timer = setTimeout(async () => {
-      if (cancelled) return
-      return // disabled for browser/LAN fork; see comment above
-      try {
-        const { loadUpdateCheckState, saveUpdateCheckState } = await import(
-          "@/lib/project-store"
-        )
-        const { useUpdateStore } = await import("@/stores/update-store")
-        const { checkForUpdates, UPDATE_CHECK_CACHE_MS } = await import(
-          "@/lib/update-check"
-        )
-
-        const persisted = await loadUpdateCheckState()
-        if (persisted) useUpdateStore.getState().hydrate(persisted)
-
-        const state = useUpdateStore.getState()
-        if (!state.enabled) {
-          console.log("[update-check] skipped: user disabled auto-check in settings")
-          return
-        }
-
-        const now = Date.now()
-        // Cache hit requires BOTH the timestamp AND the in-memory
-        // result to be present. `lastCheckedAt` is persisted to
-        // disk but `lastResult` deliberately is not — keeping the
-        // GitHub payload out of the persisted store keeps disk
-        // size + privacy footprint small. The downside: a fresh
-        // cold start has `lastResult === null` even when
-        // `lastCheckedAt` is recent, in which case we MUST refetch
-        // — otherwise we'd skip the check AND have no result to
-        // display, leaving the banner permanently stuck off.
-        // (This was the user-reported bug: "kind=none, no banner".)
-        const fresh =
-          state.lastCheckedAt !== null &&
-          state.lastResult !== null &&
-          now - state.lastCheckedAt < UPDATE_CHECK_CACHE_MS
-        if (fresh) {
-          const ageMin = Math.round((now - (state.lastCheckedAt ?? 0)) / 60_000)
-          console.log(
-            `[update-check] skipped: cache hit (last check ${ageMin} min ago, ` +
-              `cache window ${UPDATE_CHECK_CACHE_MS / 60_000} min). ` +
-              `Last result: kind=${state.lastResult?.kind ?? "none"}`,
-          )
-          return
-        }
-
-        useUpdateStore.getState().setChecking(true)
-        console.log(
-          `[update-check] fetching GitHub releases (local=${__APP_VERSION__})`,
-        )
-        const result = await checkForUpdates({
-          currentVersion: __APP_VERSION__,
-          repo: "nashsu/llm_wiki",
-        })
-        if (cancelled) return
-        useUpdateStore.getState().setResult(result, Date.now())
-        if (result.kind === "available") {
-          console.log(
-            `[update-check] update available: local=${result.local} → remote=${result.remote}`,
-          )
-        } else if (result.kind === "up-to-date") {
-          console.log(
-            `[update-check] up to date: local=${result.local}, remote latest=${result.remote}`,
-          )
-        } else {
-          console.log(`[update-check] error: ${result.message}`)
-        }
-        await saveUpdateCheckState({
-          enabled: useUpdateStore.getState().enabled,
-          lastCheckedAt: Date.now(),
-          dismissedVersion: useUpdateStore.getState().dismissedVersion,
-        })
-      } catch {
-        // Silent — Settings → About lets the user retry manually.
-      }
-    }, 1500)
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [])
+  // Update-check disabled in the browser/LAN fork — see comment above.
+  // No-op effect kept as a hook anchor in case a fork-level update mechanism
+  // is added later.
+  useEffect(() => {}, [])
 
   // Auto-open last project on startup
   useEffect(() => {
