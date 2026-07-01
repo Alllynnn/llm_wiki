@@ -680,7 +680,9 @@
     "clearCompleted": "清除已完成"
   },
   "fileTree": {
-    "noProject": "未打开项目"
+    "noProject": "未打开项目",
+    "openProjectFolder": "打开项目文件夹",
+    "openProjectFolderFailed": "打开项目文件夹失败：{{error}}"
   },
   "graph": {
     "openProject": "打开项目以查看关系图",
@@ -750,5 +752,8 @@
     "minutesAgo": "{{count}} 分钟前",
     "hoursAgo": "{{count}} 小时前",
     "daysAgo": "{{count}} 天前"
+  },
+  "common": {
+    "dismiss": "关闭"
   }
 }

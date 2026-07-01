@@ -680,7 +680,9 @@
     "clearCompleted": "Clear completed"
   },
   "fileTree": {
-    "noProject": "No project open"
+    "noProject": "No project open",
+    "openProjectFolder": "Open project folder",
+    "openProjectFolderFailed": "Failed to open project folder: {{error}}"
   },
   "graph": {
     "openProject": "Open a project to view the graph",
@@ -750,5 +752,8 @@
     "minutesAgo": "{{count}} min ago",
     "hoursAgo": "{{count}} h ago",
     "daysAgo": "{{count}} d ago"
+  },
+  "common": {
+    "dismiss": "Dismiss"
   }
 }
