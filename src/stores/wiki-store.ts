@@ -1,6 +1,12 @@
 import { create } from "zustand"
 import type { WikiProject, FileNode } from "@/types/wiki"
 import { DEFAULT_SOURCE_WATCH_CONFIG } from "@/lib/source-watch-config"
+import {
+  buildProjectPathIndexFromTree,
+  createEmptyProjectPathIndex,
+  type ProjectPathIndex,
+} from "@/lib/wiki-page-resolver"
+import { DEFAULT_GRAPH_FILTERS, type GraphFilterState } from "@/lib/graph-filters"
 
 /**
  * Wire protocol used when `provider === "custom"`. Other providers have a
@@ -18,7 +24,7 @@ export interface ReasoningConfig {
 }
 
 interface LlmConfig {
-  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax"
+  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
   apiKey: string
   model: string
   ollamaUrl: string
@@ -28,11 +34,24 @@ interface LlmConfig {
   maxContextSize: number // max context window in characters
   apiMode?: CustomApiMode
   reasoning?: ReasoningConfig
-  /** @deprecated Kept for backward-compat deserialization; ignored at runtime. */
+  /**
+   * Local CLI providers only. When true, LLM Wiki asks Claude/Codex CLI
+   * to ignore user-level rules/config/MCP/tool state where the CLI exposes
+   * such controls. Default false preserves existing advanced-user setups.
+   */
   localCliIsolation?: boolean
+  /** Codex CLI provider only. Overall subprocess timeout in minutes. */
+  codexCliTimeoutMinutes?: number
 }
 
-export type SearchProvider = "tavily" | "serpapi" | "searxng" | "ollama" | "none"
+export type SearchProvider =
+  | "tavily"
+  | "serpapi"
+  | "searxng"
+  | "ollama"
+  | "brave"
+  | "firecrawl"
+  | "none"
 export type DeepResearchSource = "web" | "anytxt" | "both"
 export type SerpApiEngine =
   | "google"
@@ -161,6 +180,13 @@ interface ProxyConfig {
   bypassLocal: boolean
 }
 
+interface ScheduledImportConfig {
+  enabled: boolean
+  path: string // 监控目录的相对路径（相对于项目根目录），空字符串表示使用默认的 "raw"
+  interval: number // 扫描间隔（分钟）
+  lastScan: number | null // 上次扫描时间戳
+}
+
 /**
  * Local HTTP API server config. Read by the Rust `api_server` module on
  * every request via `load_app_state` (5s cache). The Rust side is the
@@ -171,6 +197,8 @@ interface ProxyConfig {
  *     env-token-only setup keeps working after the toggle is added.
  *   - `allowUnauthenticated` lets local agents call the API without a
  *     token. It is explicit and default-off.
+ *   - `allowLanAccess` binds the API and clip server to 0.0.0.0 on
+ *     app startup so trusted LAN devices can reach them. Default-off.
  *   - `mcpEnabled` allows the optional MCP stdio server to use this
  *     API. It is separate from the HTTP API kill-switch so users can
  *     expose scripts while keeping MCP disabled.
@@ -181,13 +209,37 @@ interface ProxyConfig {
 interface ApiConfig {
   enabled: boolean
   allowUnauthenticated: boolean
+  allowLanAccess: boolean
   mcpEnabled: boolean
   token: string
 }
 
 export type CloseBehavior = "ask" | "minimize" | "exit"
 
+export type GraphColorMode = "type" | "community"
+
+export interface GraphUiState {
+  colorMode: GraphColorMode
+  filters: GraphFilterState
+  nodeScale: number
+  graphSpacingDraft: number
+}
+
+export function createDefaultGraphUiState(): GraphUiState {
+  return {
+    colorMode: "type",
+    filters: {
+      ...DEFAULT_GRAPH_FILTERS,
+      hiddenTypes: new Set(),
+      hiddenNodeIds: new Set(),
+    },
+    nodeScale: 1,
+    graphSpacingDraft: 1,
+  }
+}
+
 export interface GeneralConfig {
+  autostart: boolean
   closeBehavior: CloseBehavior
 }
 
@@ -270,6 +322,8 @@ export interface ProviderOverride {
   apiMode?: CustomApiMode
   maxContextSize?: number
   reasoning?: ReasoningConfig
+  localCliIsolation?: boolean
+  codexCliTimeoutMinutes?: number
 }
 
 export type ProviderConfigs = Record<string, ProviderOverride>
@@ -285,8 +339,16 @@ export interface ExternalPreview {
 interface WikiState {
   project: WikiProject | null
   fileTree: FileNode[]
+  /**
+   * Lightweight lookup index derived from `fileTree`. Production code must
+   * update fileTree through `setFileTree` so this stays in sync; direct
+   * `useWikiStore.setState({ fileTree })` is only for tests that also reset or
+   * do not read path resolution.
+   */
+  projectPathIndex: ProjectPathIndex
   selectedFile: string | null
   fileContent: string
+  previewContentPath: string | null
   externalPreview: ExternalPreview | null
   /**
    * One-shot scroll target for the markdown preview. When the user
@@ -304,7 +366,7 @@ interface WikiState {
    */
   pendingScrollImageSrc: string | null
   chatExpanded: boolean
-  activeView: "wiki" | "sources" | "search" | "graph" | "lint" | "review" | "settings"
+  activeView: "chat" | "wiki" | "sources" | "search" | "graph" | "lint" | "review" | "settings"
   llmConfig: LlmConfig
   /** Per-provider-preset stored overrides (API key, model, endpoint, …). */
   providerConfigs: ProviderConfigs
@@ -315,16 +377,21 @@ interface WikiState {
   multimodalConfig: MultimodalConfig
   outputLanguage: OutputLanguage
   proxyConfig: ProxyConfig
+  scheduledImportConfig: ScheduledImportConfig
   sourceWatchConfig: SourceWatchConfig
   mineruConfig: MineruConfig
   apiConfig: ApiConfig
   generalConfig: GeneralConfig
+  graphUiState: GraphUiState
   dataVersion: number
 
   setProject: (project: WikiProject | null) => void
-  setFileTree: (tree: FileNode[]) => void
+  setFileTree: (tree: FileNode[], options?: { syncPathIndex?: boolean }) => void
+  setProjectPathIndexFromTree: (tree: FileNode[]) => void
   setSelectedFile: (path: string | null) => void
   setFileContent: (content: string) => void
+  openPathInPreview: (path: string) => void
+  openFileInPreview: (path: string, content: string) => void
   setExternalPreview: (preview: ExternalPreview | null) => void
   setPendingScrollImageSrc: (src: string | null) => void
   setChatExpanded: (expanded: boolean) => void
@@ -337,18 +404,23 @@ interface WikiState {
   setMultimodalConfig: (config: MultimodalConfig) => void
   setOutputLanguage: (lang: OutputLanguage) => void
   setProxyConfig: (config: ProxyConfig) => void
+  setScheduledImportConfig: (config: ScheduledImportConfig) => void
   setSourceWatchConfig: (config: SourceWatchConfig) => void
   setMineruConfig: (config: MineruConfig) => void
   setApiConfig: (config: ApiConfig) => void
   setGeneralConfig: (config: GeneralConfig) => void
+  setGraphUiState: (state: GraphUiState | ((current: GraphUiState) => GraphUiState)) => void
+  resetGraphUiState: () => void
   bumpDataVersion: () => void
 }
 
 export const useWikiStore = create<WikiState>((set) => ({
   project: null,
   fileTree: [],
+  projectPathIndex: createEmptyProjectPathIndex(),
   selectedFile: null,
   fileContent: "",
+  previewContentPath: null,
   externalPreview: null,
   pendingScrollImageSrc: null,
   chatExpanded: false,
@@ -362,6 +434,7 @@ export const useWikiStore = create<WikiState>((set) => ({
     customEndpoint: "",
     azureApiVersion: "2024-10-21",
     reasoning: { mode: "auto" },
+    localCliIsolation: false,
   },
   providerConfigs: {},
   activePresetId: null,
@@ -369,9 +442,28 @@ export const useWikiStore = create<WikiState>((set) => ({
   dataVersion: 0,
 
   setProject: (project) => set({ project }),
-  setFileTree: (fileTree) => set({ fileTree }),
-  setSelectedFile: (selectedFile) => set({ selectedFile, externalPreview: null }),
+  setFileTree: (fileTree, options) => {
+    if (options?.syncPathIndex === false) {
+      set({ fileTree })
+      return
+    }
+    set({ fileTree, projectPathIndex: buildProjectPathIndexFromTree(fileTree) })
+  },
+  setProjectPathIndexFromTree: (tree) =>
+    set({ projectPathIndex: buildProjectPathIndexFromTree(tree) }),
+  setSelectedFile: (selectedFile) =>
+    set({ selectedFile, previewContentPath: null, externalPreview: null }),
   setFileContent: (fileContent) => set({ fileContent }),
+  openPathInPreview: (selectedFile) =>
+    set({ selectedFile, previewContentPath: null, externalPreview: null, activeView: "wiki" }),
+  openFileInPreview: (selectedFile, fileContent) =>
+    set({
+      selectedFile,
+      fileContent,
+      previewContentPath: selectedFile,
+      externalPreview: null,
+      activeView: "wiki",
+    }),
   setExternalPreview: (externalPreview) => set({ externalPreview }),
   setPendingScrollImageSrc: (pendingScrollImageSrc) => set({ pendingScrollImageSrc }),
   setChatExpanded: (chatExpanded) => set({ chatExpanded }),
@@ -426,6 +518,13 @@ export const useWikiStore = create<WikiState>((set) => ({
     bypassLocal: true,
   },
 
+  scheduledImportConfig: {
+    enabled: false,
+    path: "",
+    interval: 60,
+    lastScan: null,
+  },
+
   sourceWatchConfig: DEFAULT_SOURCE_WATCH_CONFIG,
   mineruConfig: { enabled: false, token: "", modelVersion: "vlm" },
 
@@ -437,13 +536,17 @@ export const useWikiStore = create<WikiState>((set) => ({
   apiConfig: {
     enabled: true,
     allowUnauthenticated: false,
+    allowLanAccess: false,
     mcpEnabled: false,
     token: "",
   },
 
   generalConfig: {
+    autostart: false,
     closeBehavior: "minimize",
   },
+
+  graphUiState: createDefaultGraphUiState(),
 
   setLlmConfig: (llmConfig) => set({ llmConfig }),
   setProviderConfigs: (providerConfigs) => set({ providerConfigs }),
@@ -453,11 +556,19 @@ export const useWikiStore = create<WikiState>((set) => ({
   setMultimodalConfig: (multimodalConfig) => set({ multimodalConfig }),
   setOutputLanguage: (outputLanguage) => set({ outputLanguage }),
   setProxyConfig: (proxyConfig) => set({ proxyConfig }),
+  setScheduledImportConfig: (scheduledImportConfig) => set({ scheduledImportConfig }),
   setSourceWatchConfig: (sourceWatchConfig) => set({ sourceWatchConfig }),
   setMineruConfig: (mineruConfig) => set({ mineruConfig }),
   setApiConfig: (apiConfig) => set({ apiConfig }),
   setGeneralConfig: (generalConfig) => set({ generalConfig }),
+  setGraphUiState: (graphUiState) =>
+    set((state) => ({
+      graphUiState: typeof graphUiState === "function"
+        ? graphUiState(state.graphUiState)
+        : graphUiState,
+    })),
+  resetGraphUiState: () => set({ graphUiState: createDefaultGraphUiState() }),
   bumpDataVersion: () => set((state) => ({ dataVersion: state.dataVersion + 1 })),
 }))
 
-export type { WikiState, LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProxyConfig, SourceWatchConfig, ApiConfig }
+export type { WikiState, LlmConfig, SearchApiConfig, EmbeddingConfig, MultimodalConfig, OutputLanguage, ProxyConfig, ScheduledImportConfig, SourceWatchConfig, ApiConfig }

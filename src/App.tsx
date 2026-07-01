@@ -208,6 +208,10 @@ function App() {
               typeof savedApi.allowUnauthenticated === "boolean"
                 ? savedApi.allowUnauthenticated
                 : false,
+            allowLanAccess:
+              typeof savedApi.allowLanAccess === "boolean"
+                ? savedApi.allowLanAccess
+                : false,
             mcpEnabled:
               typeof savedApi.mcpEnabled === "boolean"
                 ? savedApi.mcpEnabled

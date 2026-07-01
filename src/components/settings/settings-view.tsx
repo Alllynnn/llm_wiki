@@ -134,14 +134,19 @@ function initialDraft(
     proxyEnabled: proxy.enabled,
     proxyUrl: proxy.url,
     proxyBypassLocal: proxy.bypassLocal,
+    scheduledImportEnabled: false,
+    scheduledImportPath: "",
+    scheduledImportInterval: 60,
     sourceWatchConfig: normalizeSourceWatchConfig(sourceWatch),
     mineruEnabled: mineru.enabled,
     mineruToken: mineru.token,
     mineruModelVersion: mineru.modelVersion,
     apiEnabled: apiConfig.enabled,
     apiAllowUnauthenticated: apiConfig.allowUnauthenticated,
+    apiAllowLanAccess: apiConfig.allowLanAccess,
     apiMcpEnabled: apiConfig.mcpEnabled,
     apiToken: apiConfig.token,
+    autostart: generalConfig.autostart,
     closeBehavior: generalConfig.closeBehavior,
     uiLanguage,
     theme: theme ?? "system",
@@ -362,10 +367,12 @@ export function SettingsView() {
     const newApiConfig = {
       enabled: draft.apiEnabled,
       allowUnauthenticated: draft.apiAllowUnauthenticated,
+      allowLanAccess: draft.apiAllowLanAccess,
       mcpEnabled: draft.apiMcpEnabled,
       token: draft.apiToken.trim(),
     }
     const newGeneralConfig = {
+      autostart: draft.autostart,
       closeBehavior: draft.closeBehavior,
     }
 

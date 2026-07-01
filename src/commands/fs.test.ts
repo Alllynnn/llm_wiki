@@ -33,25 +33,17 @@ describe("fs command path guards", () => {
     expect(mocks.apiCall).not.toHaveBeenCalled()
   })
 
-  it("no-ops for createDirectory in browser/LAN mode (stub, does not throw)", async () => {
-    // createDirectory is a no-op stub in the browser/LAN port — the server
-    // handles directory creation internally. It no longer has a path guard
-    // since it doesn't make any real call. The path guard test is replaced
-    // with a smoke test confirming the stub resolves without throwing.
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-    await expect(createDirectory("wiki/sources")).resolves.toBeUndefined()
+  it("rejects relative directory paths before calling apiCall", async () => {
+    await expect(createDirectory("wiki/sources")).rejects.toThrow(/absolute path/i)
+
     expect(mocks.apiCall).not.toHaveBeenCalled()
-    warnSpy.mockRestore()
   })
 
-  it("allows absolute write paths (logs warning, server-side write is a stub until Task 5.4)", async () => {
-    // writeFile with an absolute path no longer calls apiCall — it's a stub
-    // that logs a warning until Task 5.4 rewires callers to pass project_path
-    // + page_path + etag for the /wiki/page PUT endpoint.
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+  it("allows absolute write paths via the browser HTTP API", async () => {
     await writeFile("/tmp/project/wiki/sources/page.md", "content")
-    expect(mocks.apiCall).not.toHaveBeenCalled()
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("writeFile"))
-    warnSpy.mockRestore()
+    expect(mocks.apiCall).toHaveBeenCalledWith("POST", "/api/v1/fs/write", {
+      path: "/tmp/project/wiki/sources/page.md",
+      content: "content",
+    })
   })
 })

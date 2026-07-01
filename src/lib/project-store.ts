@@ -1,7 +1,8 @@
 import { getConfigKey, setConfigKey, deleteConfigKey } from "@/lib/user-config"
 import type { WikiProject } from "@/types/wiki"
-import type { ApiConfig, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, SourceWatchConfig } from "@/stores/wiki-store"
+import type { ApiConfig, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig } from "@/stores/wiki-store"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
+import { normalizePath } from "@/lib/path-utils"
 import { DEFAULT_ZOOM_LEVEL, clampZoomLevel } from "@/stores/zoom-store"
 import { attachNormalizedMetadata } from "@/lib/knowledge-platform"
 
@@ -148,23 +149,40 @@ export async function loadProxyConfig(): Promise<ProxyConfig | null> {
 const API_CONFIG_KEY = "apiConfig"
 
 export async function saveApiConfig(config: ApiConfig): Promise<void> {
-  await setConfigKey(API_CONFIG_KEY, config)
+  await setConfigKey(API_CONFIG_KEY, normalizeApiConfig(config))
   // Note: the server persists immediately on every PUT — no explicit flush needed.
 }
 
 export async function loadApiConfig(): Promise<ApiConfig | null> {
-  return (await getConfigKey<ApiConfig>(API_CONFIG_KEY)) ?? null
+  const config = await getConfigKey<Partial<ApiConfig>>(API_CONFIG_KEY)
+  return config ? normalizeApiConfig(config) : null
+}
+
+export function normalizeApiConfig(config?: Partial<ApiConfig> | null): ApiConfig {
+  return {
+    enabled: typeof config?.enabled === "boolean" ? config.enabled : true,
+    allowUnauthenticated:
+      typeof config?.allowUnauthenticated === "boolean"
+        ? config.allowUnauthenticated
+        : false,
+    allowLanAccess:
+      typeof config?.allowLanAccess === "boolean" ? config.allowLanAccess : false,
+    mcpEnabled: typeof config?.mcpEnabled === "boolean" ? config.mcpEnabled : false,
+    token: typeof config?.token === "string" ? config.token : "",
+  }
 }
 
 const GENERAL_CONFIG_KEY = "generalConfig"
 
 export const DEFAULT_GENERAL_CONFIG: GeneralConfig = {
+  autostart: false,
   closeBehavior: "minimize",
 }
 
 export function normalizeGeneralConfig(config?: Partial<GeneralConfig> | null): GeneralConfig {
   const closeBehavior = config?.closeBehavior
   return {
+    autostart: typeof config?.autostart === "boolean" ? config.autostart : false,
     closeBehavior:
       closeBehavior === "ask" || closeBehavior === "minimize" || closeBehavior === "exit"
         ? closeBehavior
@@ -179,6 +197,36 @@ export async function saveGeneralConfig(config: GeneralConfig): Promise<void> {
 export async function loadGeneralConfig(): Promise<GeneralConfig> {
   const config = await getConfigKey<Partial<GeneralConfig>>(GENERAL_CONFIG_KEY)
   return normalizeGeneralConfig(config)
+}
+
+const SCHEDULED_IMPORT_KEY_PREFIX = "scheduledImportConfig:"
+const SCHEDULED_IMPORT_GLOBAL_KEY = "scheduledImportConfig"
+
+function scheduledImportKey(projectPath: string): string {
+  return `${SCHEDULED_IMPORT_KEY_PREFIX}${normalizePath(projectPath)}`
+}
+
+export async function saveScheduledImportConfig(
+  projectPath: string,
+  config: ScheduledImportConfig,
+): Promise<void> {
+  await setConfigKey(scheduledImportKey(projectPath), config)
+}
+
+export async function loadScheduledImportConfig(
+  projectPath: string,
+): Promise<ScheduledImportConfig | null> {
+  const perProject = await getConfigKey<ScheduledImportConfig>(
+    scheduledImportKey(projectPath),
+  )
+  if (perProject) return perProject
+
+  // Migrate from legacy global key (pre-0.4.8 official desktop behavior).
+  const legacy = await getConfigKey<ScheduledImportConfig>(SCHEDULED_IMPORT_GLOBAL_KEY)
+  if (!legacy) return null
+  await setConfigKey(scheduledImportKey(projectPath), legacy)
+  await deleteConfigKey(SCHEDULED_IMPORT_GLOBAL_KEY)
+  return legacy
 }
 
 export async function removeFromRecentProjects(

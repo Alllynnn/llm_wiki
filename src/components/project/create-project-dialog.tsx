@@ -32,6 +32,29 @@ interface CreateProjectDialogProps {
   onCreated: (project: WikiProject) => void
 }
 
+export interface CreateProjectFormStatus {
+  missingRequired: boolean
+  canCreate: boolean
+  footerMessageKey: string | null
+  footerError: string
+}
+
+export function getCreateProjectFormStatus(
+  name: string,
+  path: string,
+  language: string,
+  error: string,
+  hasInteracted: boolean,
+): CreateProjectFormStatus {
+  const missingRequired = !name.trim() || !path.trim() || !language
+  return {
+    missingRequired,
+    canCreate: !missingRequired,
+    footerError: error,
+    footerMessageKey: !error && hasInteracted && missingRequired ? "project.requiredHint" : null,
+  }
+}
+
 export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: CreateProjectDialogProps) {
   const { t } = useTranslation()
   const [name, setName] = useState("")

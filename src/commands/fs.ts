@@ -82,7 +82,29 @@ export async function writeFileAtomic(path: string, contents: string): Promise<v
 
 // ── Directory listing ─────────────────────────────────────────────────────────
 
-export async function listDirectory(path: string): Promise<FileNode[]> {
+export interface ListDirectoryOptions {
+  includeHidden?: boolean
+  maxDepth?: number
+}
+
+interface PendingListDirectory {
+  request: Promise<FileNode[]>
+  shared: boolean
+}
+
+const pendingListDirectory = new Map<string, PendingListDirectory>()
+
+function cloneFileNodes(nodes: FileNode[]): FileNode[] {
+  return nodes.map((node) => ({
+    ...node,
+    children: node.children ? cloneFileNodes(node.children) : node.children,
+  }))
+}
+
+export async function listDirectory(
+  path: string,
+  includeHiddenOrOptions: boolean | ListDirectoryOptions = false,
+): Promise<FileNode[]> {
   // Server returns `{entries: [{name, is_dir, ...}]}` — flat, immediate
   // children only, names only. Legacy Tauri's `list_directory` was
   // recursive AND returned absolute paths per entry. Callers (graph view,
@@ -95,9 +117,24 @@ export async function listDirectory(path: string): Promise<FileNode[]> {
   // runs in parallel via Promise.all to keep wall-clock latency down on
   // wiki trees with many sibling subdirs.
   type ServerEntry = { name: string; is_dir: boolean }
-  const isSkippable = (name: string): boolean => name.startsWith(".")
-  const visit = async (dir: string): Promise<FileNode[]> => {
+  const options =
+    typeof includeHiddenOrOptions === "boolean"
+      ? { includeHidden: includeHiddenOrOptions }
+      : includeHiddenOrOptions
+  const includeHidden = options.includeHidden ?? false
+  const maxDepth = options.maxDepth
+  const requestKey = JSON.stringify([path, includeHidden, maxDepth ?? null])
+  const pending = pendingListDirectory.get(requestKey)
+  if (pending) {
+    pending.shared = true
+    return pending.request.then(cloneFileNodes)
+  }
+
+  const isSkippable = (name: string): boolean => !includeHidden && name.startsWith(".")
+  const visit = async (dir: string, depth: number): Promise<FileNode[]> => {
     const qs = new URLSearchParams({ path: dir })
+    qs.set("includeHidden", String(includeHidden))
+    if (typeof maxDepth === "number") qs.set("maxDepth", String(maxDepth))
     let resp: { entries: ServerEntry[] }
     try {
       resp = await apiCall<{ entries: ServerEntry[] }>(
@@ -114,14 +151,19 @@ export async function listDirectory(path: string): Promise<FileNode[]> {
       usableEntries.map(async (e): Promise<FileNode> => {
         const fullPath = parent === "" ? e.name : `${parent}/${e.name}`
         const node: FileNode = { name: e.name, is_dir: e.is_dir, path: fullPath }
-        if (e.is_dir) {
-          node.children = await visit(fullPath)
+        if (e.is_dir && (maxDepth === undefined || depth < maxDepth)) {
+          node.children = await visit(fullPath, depth + 1)
         }
         return node
       }),
     )
   }
-  return await visit(path)
+  const request = visit(path, 0).finally(() => {
+    pendingListDirectory.delete(requestKey)
+  })
+  const entry: PendingListDirectory = { request, shared: false }
+  pendingListDirectory.set(requestKey, entry)
+  return request.then((nodes) => (entry.shared ? cloneFileNodes(nodes) : nodes))
 }
 
 // ── File operations (internal-only stubs) ─────────────────────────────────────

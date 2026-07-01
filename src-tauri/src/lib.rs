@@ -5,8 +5,10 @@ pub mod core;
 pub mod http;
 mod clip_server;
 mod commands;
+mod cors;
 mod panic_guard;
 mod proxy;
+mod server_bind;
 pub mod storage;
 mod tray;
 mod types;
@@ -139,8 +141,6 @@ fn tray_available<R: tauri::Runtime>(window: &tauri::Window<R>) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    clip_server::start_clip_server();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -184,7 +184,13 @@ pub fn run() {
             // drained on process exit or by claude_cli_kill.
             app.manage(commands::claude_cli::ClaudeCliState::default());
             app.manage(commands::codex_cli::CodexCliState::default());
+            app.manage(commands::file_sync::FileSyncState::default());
             app.manage(CloseBehaviorState(Mutex::new("minimize".to_string())));
+            app.manage(TrayAvailabilityState(Mutex::new(false)));
+            // Start background HTTP listeners before optional desktop integrations so
+            // the browser/LAN server remains reachable even if tray setup fails.
+            clip_server::start_clip_server(app.handle().clone());
+            api_server::start_api_server(app.handle().clone());
             let tray_available = match tray::create_tray(app.handle()) {
                 Ok(()) => true,
                 Err(err) => {
@@ -192,8 +198,14 @@ pub fn run() {
                     false
                 }
             };
-            app.manage(TrayAvailabilityState(Mutex::new(tray_available)));
-            api_server::start_api_server(app.handle().clone());
+            match app.state::<TrayAvailabilityState>().0.lock() {
+                Ok(mut state) => {
+                    *state = tray_available;
+                }
+                Err(err) => {
+                    eprintln!("[tray] failed to update tray availability state: {err}");
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -230,6 +242,7 @@ pub fn run() {
             commands::vectorstore::vector_delete_page,
             commands::vectorstore::vector_count_chunks,
             commands::vectorstore::vector_clear_chunks,
+            commands::vectorstore::vector_optimize_chunks,
             commands::vectorstore::vector_legacy_row_count,
             commands::vectorstore::vector_drop_legacy,
             commands::claude_cli::claude_cli_detect,
