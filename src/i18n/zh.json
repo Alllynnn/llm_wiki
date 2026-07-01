@@ -4,6 +4,7 @@
     "subtitle": "用大模型构建和维护你的业务知识库"
   },
   "nav": {
+    "chat": "问答",
     "wiki": "Wiki",
     "sources": "原始资料",
     "search": "搜索",
