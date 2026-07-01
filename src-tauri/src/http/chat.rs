@@ -11,19 +11,9 @@
 //!
 //! # User-config shape for LLM provider
 //!
-//! The handler reads `user_config["llm"]` expecting:
-//! ```json
-//! {
-//!   "llm": {
-//!     "base_url":      "https://api.openai.com",
-//!     "api_key":       "sk-...",
-//!     "model":         "gpt-4o-mini",
-//!     "extra_headers": { "X-Custom": "value" }  // optional
-//!   }
-//! }
-//! ```
-//! If the `llm` key is absent or missing `base_url` / `model`, the handler
-//! returns 400 with code `LLM_PROVIDER_NOT_CONFIGURED`.
+//! The handler accepts the browser/LAN frontend's `llmConfig` shape and the
+//! older API-only `llm` shape. See `http::user_config` for the compatibility
+//! parser.
 
 use std::sync::Arc;
 
@@ -35,10 +25,10 @@ use serde::Deserialize;
 use tower_cookies::Cookies;
 
 use crate::core::events::EventSink;
-use crate::core::llm_client::ProviderConfig;
 use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::session_event_sink::SessionEventSink;
+pub(crate) use crate::http::user_config::provider_config_from_user;
 use crate::http::AppState;
 use crate::storage::paths::resolve_project_path;
 
@@ -227,45 +217,6 @@ async fn send(
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Extract `ProviderConfig` from the user's persisted config JSON.
-///
-/// Expected shape (see module doc):
-/// ```json
-/// { "llm": { "base_url": "...", "api_key": "...", "model": "..." } }
-/// ```
-pub(crate) fn provider_config_from_user(cfg: &serde_json::Value) -> Result<ProviderConfig, String> {
-    let llm = cfg.get("llm").ok_or("missing llm config")?;
-    let base_url = llm
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .ok_or("missing llm.base_url")?
-        .to_string();
-    let api_key = llm
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let model = llm
-        .get("model")
-        .and_then(|v| v.as_str())
-        .ok_or("missing llm.model")?
-        .to_string();
-    let extra_headers = llm
-        .get("extra_headers")
-        .and_then(|v| v.as_object())
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(ProviderConfig {
-        base_url,
-        api_key,
-        model,
-        extra_headers,
-    })
-}
 
 /// Generate a short random identifier (11 URL-safe base64 chars ≈ 8 bytes).
 pub(crate) fn uuid_short() -> String {

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { apiCall, ApiError } from "@/lib/api"
+import { useTranslation } from "react-i18next"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ export interface LoginViewProps {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function LoginView({ onLogin }: LoginViewProps) {
+  const { t } = useTranslation()
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -36,11 +38,11 @@ export function LoginView({ onLogin }: LoginViewProps) {
       onLogin(user)
     } catch (err) {
       if (err instanceof ApiError && err.code === "INVALID_CREDENTIALS") {
-        setError("Invalid username or password.")
+        setError(t("auth.invalidCredentials"))
       } else if (err instanceof Error) {
         setError(err.message)
       } else {
-        setError("An unexpected error occurred.")
+        setError(t("auth.unexpectedError"))
       }
     } finally {
       setSubmitting(false)
@@ -52,13 +54,13 @@ export function LoginView({ onLogin }: LoginViewProps) {
       <div className="w-full max-w-sm rounded-xl border bg-popover p-8 shadow-sm ring-1 ring-foreground/10">
         {/* App title */}
         <div className="mb-6 text-center">
-          <h1 className="font-heading text-xl font-semibold tracking-tight">LLM Wiki</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Sign in to continue</p>
+          <h1 className="font-heading text-xl font-semibold tracking-tight">{t("app.title")}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{t("auth.signInPrompt")}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="username">Username</Label>
+            <Label htmlFor="username">{t("auth.username")}</Label>
             <Input
               id="username"
               type="text"
@@ -67,12 +69,12 @@ export function LoginView({ onLogin }: LoginViewProps) {
               onChange={(e) => setUsername(e.target.value)}
               disabled={submitting}
               required
-              placeholder="Enter your username"
+              placeholder={t("auth.usernamePlaceholder")}
             />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="password">Password</Label>
+            <Label htmlFor="password">{t("auth.password")}</Label>
             <Input
               id="password"
               type="password"
@@ -81,7 +83,7 @@ export function LoginView({ onLogin }: LoginViewProps) {
               onChange={(e) => setPassword(e.target.value)}
               disabled={submitting}
               required
-              placeholder="Enter your password"
+              placeholder={t("auth.passwordPlaceholder")}
             />
           </div>
 
@@ -92,7 +94,7 @@ export function LoginView({ onLogin }: LoginViewProps) {
           )}
 
           <Button type="submit" disabled={submitting} className="mt-1 w-full">
-            {submitting ? "Signing in…" : "Log in"}
+            {submitting ? t("auth.signingIn") : t("auth.login")}
           </Button>
         </form>
       </div>

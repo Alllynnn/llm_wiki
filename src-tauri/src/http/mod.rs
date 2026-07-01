@@ -24,6 +24,7 @@ pub mod files;
 pub mod proxy;
 pub mod proxy_raw;
 pub mod agent;
+pub mod user_config;
 
 use std::sync::Arc;
 

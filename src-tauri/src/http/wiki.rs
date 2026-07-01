@@ -237,22 +237,26 @@ struct SearchRequest {
 
 async fn search(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let project_root = resolve_project_root(&state, &req.project_path)?;
+    let user_config = state
+        .user_data
+        .load_config(&user.id)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let embedding_config = crate::http::user_config::embedding_config_from_user(&user_config);
 
-    // Call core::search::search_project with its full signature.
-    // We do not pass embedding_config from the HTTP layer; keyword-only
-    // fallback is always available. Callers needing vector search should
-    // supply query_embedding pre-computed on the client side.
+    // Call core::search::search_project with its full signature. The user's
+    // global embedding config is shared across projects; if it is disabled or
+    // incomplete, the core search falls back to keyword-only retrieval.
     let result = crate::core::search::search_project(
         project_root.to_string_lossy().to_string(),
         req.query,
         req.top_k,
         req.include_content,
         None, // query_embedding — not supplied via this endpoint
-        None, // embedding_config — not supplied via this endpoint
+        embedding_config,
     )
     .await?;
 

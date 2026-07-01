@@ -83,6 +83,87 @@ export function resolveRelatedSlug(
 }
 
 /**
+ * Resolve a normal Markdown page link (`[title](synthesis/foo.md)`) to an
+ * existing wiki page. Unlike `related:` frontmatter, Markdown links are often
+ * relative to the file currently being rendered.
+ */
+export function resolveMarkdownPageHref(
+  tree: FileNode[],
+  href: string,
+  wikiRoot: string,
+  currentFilePath?: string | null,
+): string | null {
+  const pathPart = markdownHrefPath(href)
+  if (!pathPart) return null
+
+  if (currentFilePath && isRelativeHrefPath(pathPart)) {
+    const currentRel = projectRelativeWikiPath(currentFilePath, wikiRoot)
+    if (currentRel) {
+      const currentDir = currentRel.includes("/")
+        ? currentRel.slice(0, currentRel.lastIndexOf("/"))
+        : ""
+      const relativeTarget = normalizeRelativePath(
+        currentDir ? `${currentDir}/${pathPart}` : pathPart,
+      )
+      const found = findInTreeByPath(tree, `${wikiRoot}/${relativeTarget}`)
+      if (found && found.includes(`${wikiRoot}/`)) return found
+    }
+  }
+
+  const normalized = normalizeRelativePath(pathPart.replace(/^\/+/, ""))
+  const candidates = new Set<string>()
+  if (normalized.startsWith("wiki/")) {
+    candidates.add(normalized)
+  } else {
+    candidates.add(`wiki/${normalized}`)
+  }
+  candidates.add(lastPathSegment(normalized))
+
+  for (const candidate of candidates) {
+    const found = resolveRelatedSlug(tree, candidate, wikiRoot)
+    if (found) return found
+  }
+  return null
+}
+
+/**
+ * Resolve browser deep links such as `/synthesis/foo.md` or accidental nested
+ * URLs like `/concepts/faq/synthesis/foo.md` back into the current project's
+ * wiki tree. The suffix search handles old full-page navigations caused by
+ * relative Markdown links.
+ */
+export function resolveWikiPathFromBrowserPath(
+  tree: FileNode[],
+  browserPath: string,
+  wikiRoot: string,
+): string | null {
+  const pathPart = markdownHrefPath(browserPath)
+  if (!pathPart) return null
+
+  const normalized = normalizeRelativePath(pathPart.replace(/^\/+/, ""))
+  const segments = normalized.split("/").filter(Boolean)
+  const candidates = new Set<string>()
+
+  if (normalized.startsWith("wiki/")) {
+    candidates.add(normalized)
+  } else {
+    candidates.add(`wiki/${normalized}`)
+  }
+
+  for (let i = 0; i < segments.length; i++) {
+    const suffix = segments.slice(i).join("/")
+    if (suffix) candidates.add(`wiki/${suffix}`)
+  }
+  candidates.add(lastPathSegment(normalized))
+
+  for (const candidate of candidates) {
+    const found = resolveRelatedSlug(tree, candidate, wikiRoot)
+    if (found) return found
+  }
+  return null
+}
+
+/**
  * Resolve a `sources:` reference. Accepts:
  *   1. project-relative path:  `wiki/sources/foo.md` or
  *                              `raw/sources/year-2025/q1.pdf`
@@ -142,4 +223,52 @@ function findInTreeByPath(tree: FileNode[], targetPath: string): string | null {
     return null
   }
   return walk(tree)
+}
+
+function markdownHrefPath(href: string): string | null {
+  const raw = href.trim()
+  if (!raw || raw.startsWith("#")) return null
+  if (raw.startsWith("//") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(raw)) return null
+  const path = safeDecodeURIComponent(raw.split("#")[0].split("?")[0])
+    .replace(/\\/g, "/")
+    .trim()
+  return path.toLowerCase().endsWith(".md") ? path : null
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function isRelativeHrefPath(path: string): boolean {
+  return !path.startsWith("/") && !path.startsWith("\\") && !/^[A-Za-z]:[\\/]/.test(path)
+}
+
+function projectRelativeWikiPath(filePath: string, wikiRoot: string): string | null {
+  const normalizedFile = filePath.replace(/\\/g, "/")
+  const normalizedRoot = wikiRoot.replace(/\\/g, "/").replace(/\/+$/, "")
+  return normalizedFile.startsWith(`${normalizedRoot}/`)
+    ? normalizedFile.slice(normalizedRoot.length + 1)
+    : null
+}
+
+function normalizeRelativePath(path: string): string {
+  const out: string[] = []
+  for (const part of path.replace(/\\/g, "/").split("/")) {
+    if (!part || part === ".") continue
+    if (part === "..") {
+      out.pop()
+      continue
+    }
+    out.push(part)
+  }
+  return out.join("/")
+}
+
+function lastPathSegment(path: string): string {
+  const parts = path.split("/").filter(Boolean)
+  return parts[parts.length - 1] ?? path
 }

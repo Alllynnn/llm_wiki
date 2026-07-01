@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest"
 import type { FileNode } from "@/types/wiki"
 import {
   findInTreeByName,
+  resolveMarkdownPageHref,
   resolveRelatedSlug,
   resolveSourceName,
+  resolveWikiPathFromBrowserPath,
   unwrapWikilink,
 } from "./wiki-page-resolver"
 
@@ -24,8 +26,10 @@ const TREE: FileNode[] = [
   dir(`${PP}/wiki`, [
     dir(`${WIKI}/entities`, [file(`${WIKI}/entities/foo.md`)]),
     dir(`${WIKI}/concepts`, [file(`${WIKI}/concepts/bar.md`)]),
+    dir(`${WIKI}/faq`, [file(`${WIKI}/faq/payroll.md`)]),
     dir(`${WIKI}/queries`, [file(`${WIKI}/queries/what-is-foo.md`)]),
     dir(`${WIKI}/sources`, [file(`${WIKI}/sources/paper.md`)]),
+    dir(`${WIKI}/synthesis`, [file(`${WIKI}/synthesis/map.md`)]),
   ]),
   dir(`${PP}/raw`, [
     dir(`${SOURCES}`, [
@@ -144,6 +148,44 @@ describe("resolveRelatedSlug", () => {
 
   it("rejects path-like refs that point outside wiki/", () => {
     expect(resolveRelatedSlug(TREE, "raw/sources/year-2025/notes.md", WIKI)).toBeNull()
+  })
+})
+
+describe("resolveMarkdownPageHref", () => {
+  it("resolves markdown links relative to the current wiki file", () => {
+    expect(resolveMarkdownPageHref(TREE, "synthesis/map.md", WIKI, `${WIKI}/index.md`)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+
+  it("resolves parent-directory markdown links", () => {
+    expect(resolveMarkdownPageHref(TREE, "../synthesis/map.md", WIKI, `${WIKI}/faq/payroll.md`)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+
+  it("does not resolve external links", () => {
+    expect(resolveMarkdownPageHref(TREE, "https://example.com/map.md", WIKI, `${WIKI}/index.md`)).toBeNull()
+  })
+})
+
+describe("resolveWikiPathFromBrowserPath", () => {
+  it("resolves direct wiki browser paths", () => {
+    expect(resolveWikiPathFromBrowserPath(TREE, "/synthesis/map.md", WIKI)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+
+  it("recovers from nested browser paths produced by old relative navigations", () => {
+    expect(resolveWikiPathFromBrowserPath(TREE, "/concepts/faq/synthesis/map.md", WIKI)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+
+  it("decodes encoded browser paths", () => {
+    expect(resolveWikiPathFromBrowserPath(TREE, "/synthesis/map%2Emd", WIKI)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
   })
 })
 

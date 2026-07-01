@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
 const host = process.env.TAURI_DEV_HOST
+const apiTarget = process.env.VITE_API_PROXY_TARGET ?? "http://127.0.0.1:18080"
 
 // Read version from package.json at config-load time so the Settings
 // UI can show the running app version without duplicating the string.
@@ -31,6 +32,12 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    proxy: {
+      "/api": {
+        target: apiTarget,
+        changeOrigin: true,
+      },
+    },
     hmr: host
       ? {
           protocol: "ws",
@@ -39,8 +46,18 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // Runtime data is written by the Rust server while the app is open
+      // (sessions, per-user config, project queues, imported sources). If Vite
+      // watches it, login/project-open writes trigger a full-page reload loop.
+      ignored: [
+        "**/src-tauri/**",
+        "**/data/**",
+        "**/data-codex-temp/**",
+        "**/projects/**",
+        "**/exports/**",
+        "**/.agents/**",
+        "**/dist/**",
+      ],
     },
   },
 

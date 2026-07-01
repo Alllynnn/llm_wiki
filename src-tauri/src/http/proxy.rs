@@ -320,6 +320,63 @@ mod tests {
         assert_eq!(v["answer"], 42);
     }
 
+    #[tokio::test]
+    async fn proxy_non_streaming_accepts_frontend_llm_config_shape() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"answer":"frontend-config"}"#)
+            .create_async()
+            .await;
+
+        let (_dir, state) = build_state("alice", "pw");
+
+        // This is the shape saved by the browser settings UI in
+        // /api/v1/config. It must work across all projects for the user.
+        state
+            .user_data
+            .save_config(
+                "alice",
+                &serde_json::json!({
+                    "llmConfig": {
+                        "provider": "custom",
+                        "customEndpoint": format!("{}/v1", server.url()),
+                        "apiKey": "test-key",
+                        "model": "test-model"
+                    }
+                }),
+            )
+            .unwrap();
+
+        let app = main_router(state.clone());
+        let cookie = do_login(app.clone(), "alice", "pw").await;
+
+        let body = serde_json::json!({
+            "stream": false,
+            "body": { "messages": [{"role": "user", "content": "hi"}] }
+        })
+        .to_string();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/proxy/llm")
+                    .header("content-type", "application/json")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["answer"], "frontend-config");
+    }
+
     // ── proxy_streaming_returns_202_and_request_id ────────────────────────────
 
     #[tokio::test]

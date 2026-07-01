@@ -16,12 +16,17 @@
 import { getConfigKey, setConfigKey } from "@/lib/user-config"
 import { readFile, writeFile } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
+import {
+  normalizeProjectMetadata,
+  type BusinessProjectMetadata,
+} from "@/lib/knowledge-platform"
 
 const REGISTRY_KEY = "projectRegistry"
 
 export interface ProjectIdentity {
   id: string
   createdAt: number
+  metadata?: Partial<BusinessProjectMetadata>
 }
 
 export interface ProjectRegistryEntry {
@@ -29,6 +34,7 @@ export interface ProjectRegistryEntry {
   path: string       // latest known filesystem path (normalized forward slashes)
   name: string
   lastOpened: number
+  metadata: BusinessProjectMetadata
 }
 
 export type ProjectRegistry = Record<string, ProjectRegistryEntry>
@@ -66,6 +72,42 @@ export async function ensureProjectId(projectPath: string): Promise<string> {
   return identity.id
 }
 
+export async function loadProjectMetadata(
+  projectPath: string,
+): Promise<BusinessProjectMetadata> {
+  try {
+    const raw = await readFile(identityPath(projectPath))
+    const parsed = JSON.parse(raw) as ProjectIdentity
+    return normalizeProjectMetadata(parsed.metadata)
+  } catch {
+    return normalizeProjectMetadata(null)
+  }
+}
+
+export async function saveProjectMetadata(
+  projectPath: string,
+  metadata: BusinessProjectMetadata,
+): Promise<BusinessProjectMetadata> {
+  const path = identityPath(projectPath)
+  const normalized = normalizeProjectMetadata(metadata)
+  let identity: ProjectIdentity = {
+    id: crypto.randomUUID(),
+    createdAt: Date.now(),
+  }
+  try {
+    identity = JSON.parse(await readFile(path)) as ProjectIdentity
+  } catch {
+    // Missing or invalid identity is repaired below.
+  }
+  const next: ProjectIdentity = {
+    id: typeof identity.id === "string" ? identity.id : crypto.randomUUID(),
+    createdAt: typeof identity.createdAt === "number" ? identity.createdAt : Date.now(),
+    metadata: normalized,
+  }
+  await writeFile(path, JSON.stringify(next, null, 2))
+  return normalized
+}
+
 // ── Global registry (user-config via /api/v1/config) ─────────────────────
 
 export async function loadRegistry(): Promise<ProjectRegistry> {
@@ -89,13 +131,18 @@ export async function upsertProjectInfo(
   id: string,
   path: string,
   name: string,
+  metadata?: BusinessProjectMetadata,
 ): Promise<void> {
   const registry = await loadRegistry()
+  const normalized = normalizeProjectMetadata(
+    metadata ?? registry[id]?.metadata ?? await loadProjectMetadata(path),
+  )
   registry[id] = {
     id,
     path: normalizePath(path),
     name,
     lastOpened: Date.now(),
+    metadata: normalized,
   }
   await saveRegistry(registry)
 }

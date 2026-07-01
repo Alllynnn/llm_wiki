@@ -20,10 +20,54 @@
     "openDownload": "Open download page",
     "dismiss": "Dismiss"
   },
+  "auth": {
+    "signInPrompt": "Sign in to continue",
+    "username": "Username",
+    "usernamePlaceholder": "Enter your username",
+    "password": "Password",
+    "passwordPlaceholder": "Enter your password",
+    "login": "Log in",
+    "signingIn": "Signing in...",
+    "invalidCredentials": "Invalid username or password.",
+    "unexpectedError": "An unexpected error occurred."
+  },
   "welcome": {
     "newProject": "New Project",
     "openProject": "Open Project",
-    "recentProjects": "Recent Projects"
+    "recentProjects": "Recent Projects",
+    "platformSubtitle": "Organize project knowledge bases by business category: annotation, crawling, project assets, and general knowledge bases can all grow inside one platform.",
+    "noProjectsInCategory": "No projects in this category yet. Create one to start collecting sources.",
+    "removeRecent": "Remove {{name}} from recent projects"
+  },
+  "knowledge": {
+    "allCategories": "All",
+    "categories": {
+      "annotation": {
+        "name": "Annotation Projects",
+        "description": "Language/audio collection, video annotation, image-text labeling, and other data production projects."
+      },
+      "crawler": {
+        "name": "Crawler Projects",
+        "description": "Website collection, public data crawling, cleaning, reruns, and delivery retrospectives."
+      },
+      "projectAssets": {
+        "name": "Project Assets",
+        "description": "Project management, delivery retrospectives, client wording, and reusable process assets."
+      },
+      "general": {
+        "name": "General Knowledge Bases",
+        "description": "Uncategorized or cross-business reusable knowledge bases."
+      }
+    },
+    "kinds": {
+      "languageAudio": "Language/audio collection",
+      "video": "Video annotation",
+      "imageText": "Image-text labeling",
+      "rubric": "Rubric annotation",
+      "webCrawler": "Crawler collection",
+      "projectOps": "Project operations asset",
+      "general": "General project"
+    }
   },
   "sidebar": {
     "knowledge": "Knowledge",
@@ -58,6 +102,11 @@
     "parentDir": "Parent Directory",
     "parentDirPlaceholder": "/Users/you/projects",
     "template": "Template",
+    "knowledgeCategory": "Knowledge Category",
+    "projectKind": "Project Kind",
+    "businessContext": "Business Context",
+    "businessContextPlaceholder": "Example: a Rubric annotation project for rules, workflows, QA criteria, and project materials.",
+    "sourcePolicy": "Source Policy",
     "cancel": "Cancel",
     "create": "Create",
     "creating": "Creating...",

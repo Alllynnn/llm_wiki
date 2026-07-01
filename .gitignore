@@ -28,6 +28,13 @@ AGENTS.md
 # Benchmark and test data (local only)
 tests/
 
+# Runtime/user data (local only)
+data/
+data-codex-temp/
+projects/
+exports/
+.agents/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

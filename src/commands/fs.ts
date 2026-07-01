@@ -1,6 +1,6 @@
 import { apiCall, apiFetch, fileRawUrl } from "@/lib/api"
 import type { FileNode, WikiProject } from "@/types/wiki"
-import { ensureProjectId, upsertProjectInfo } from "@/lib/project-identity"
+import { ensureProjectId, loadProjectMetadata, upsertProjectInfo } from "@/lib/project-identity"
 import { isAbsolutePath } from "@/lib/path-utils"
 
 /** Raw shape returned by the HTTP projects endpoints. */
@@ -228,15 +228,17 @@ export async function createProject(
   // and creates under the server's projects_root. The `path` argument is ignored.
   const raw = await apiCall<RawProject>("POST", "/api/v1/projects/create", { name })
   const id = await ensureProjectId(raw.path)
-  await upsertProjectInfo(id, raw.path, raw.name)
-  return { id, name: raw.name, path: raw.path }
+  const metadata = await loadProjectMetadata(raw.path)
+  await upsertProjectInfo(id, raw.path, raw.name, metadata)
+  return { id, name: raw.name, path: raw.path, metadata }
 }
 
 export async function openProject(path: string): Promise<WikiProject> {
   const raw = await apiCall<RawProject>("POST", "/api/v1/projects/open", { path })
   const id = await ensureProjectId(raw.path)
-  await upsertProjectInfo(id, raw.path, raw.name)
-  return { id, name: raw.name, path: raw.path }
+  const metadata = await loadProjectMetadata(raw.path)
+  await upsertProjectInfo(id, raw.path, raw.name, metadata)
+  return { id, name: raw.name, path: raw.path, metadata }
 }
 
 export async function openProjectFolder(_path: string): Promise<void> {

@@ -3,23 +3,25 @@ import type { WikiProject } from "@/types/wiki"
 import type { ApiConfig, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, SourceWatchConfig } from "@/stores/wiki-store"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { DEFAULT_ZOOM_LEVEL, clampZoomLevel } from "@/stores/zoom-store"
+import { attachNormalizedMetadata } from "@/lib/knowledge-platform"
 
 const RECENT_PROJECTS_KEY = "recentProjects"
 const LAST_PROJECT_KEY = "lastProject"
 
 export async function getRecentProjects(): Promise<WikiProject[]> {
   const projects = await getConfigKey<WikiProject[]>(RECENT_PROJECTS_KEY)
-  return projects ?? []
+  return (projects ?? []).map(normalizeStoredProject)
 }
 
 export async function getLastProject(): Promise<WikiProject | null> {
   const project = await getConfigKey<WikiProject>(LAST_PROJECT_KEY)
-  return project ?? null
+  return project ? normalizeStoredProject(project) : null
 }
 
 export async function saveLastProject(project: WikiProject): Promise<void> {
-  await setConfigKey(LAST_PROJECT_KEY, project)
-  await addToRecentProjects(project)
+  const normalized = normalizeStoredProject(project)
+  await setConfigKey(LAST_PROJECT_KEY, normalized)
+  await addToRecentProjects(normalized)
 }
 
 export async function addToRecentProjects(
@@ -27,7 +29,7 @@ export async function addToRecentProjects(
 ): Promise<void> {
   const existing = (await getConfigKey<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
   const filtered = existing.filter((p) => p.path !== project.path)
-  const updated = [project, ...filtered].slice(0, 10)
+  const updated = [normalizeStoredProject(project), ...filtered.map(normalizeStoredProject)].slice(0, 10)
   await setConfigKey(RECENT_PROJECTS_KEY, updated)
 }
 
@@ -108,6 +110,11 @@ function normalizeZoomLevel(level: unknown): number {
 export const __projectStoreTest = {
   normalizeMineruConfig,
   normalizeZoomLevel,
+  normalizeStoredProject,
+}
+
+function normalizeStoredProject(project: WikiProject): WikiProject {
+  return attachNormalizedMetadata(project)
 }
 
 export async function saveMineruConfig(config: MineruConfig): Promise<void> {

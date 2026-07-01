@@ -49,3 +49,16 @@ describe("project-store zoom normalization", () => {
     expect(__projectStoreTest.normalizeZoomLevel("150")).toBe(1)
   })
 })
+
+describe("project-store project metadata normalization", () => {
+  it("adds default metadata to legacy project records", () => {
+    expect(__projectStoreTest.normalizeStoredProject({
+      id: "legacy",
+      name: "Legacy",
+      path: "/legacy",
+    }).metadata).toMatchObject({
+      categoryId: "general",
+      projectKindId: "general",
+    })
+  })
+})

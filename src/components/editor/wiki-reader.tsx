@@ -5,7 +5,7 @@ import remarkMath from "remark-math"
 import rehypeKatex from "rehype-katex"
 import "katex/dist/katex.min.css"
 import { transformImageEmbeds, transformWikilinks } from "@/lib/wikilink-transform"
-import { resolveRelatedSlug } from "@/lib/wiki-page-resolver"
+import { resolveMarkdownPageHref, resolveRelatedSlug } from "@/lib/wiki-page-resolver"
 import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
 import { normalizePath } from "@/lib/path-utils"
 import { detectLanguage } from "@/lib/detect-language"
@@ -64,7 +64,14 @@ export function WikiReader({ body, filePath }: WikiReaderProps) {
   }, [filePath])
 
   function handleAnchorClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
-    if (!href.startsWith("#")) return
+    if (!href.startsWith("#")) {
+      if (!wikiRoot) return
+      const path = resolveMarkdownPageHref(fileTree, href, wikiRoot, filePath)
+      if (!path) return
+      e.preventDefault()
+      setSelectedFile(path)
+      return
+    }
     e.preventDefault()
     if (!wikiRoot) return
     const slug = (() => {
@@ -92,12 +99,14 @@ export function WikiReader({ body, filePath }: WikiReaderProps) {
           a: ({ href, children, ...props }) => {
             const h = typeof href === "string" ? href : ""
             const isWikilink = h.startsWith("#")
+            const isWikiPageLink = !!wikiRoot && !!resolveMarkdownPageHref(fileTree, h, wikiRoot, filePath)
+            const isInternalLink = isWikilink || isWikiPageLink
             return (
               <a
                 href={h || undefined}
-                onClick={(e) => isWikilink && handleAnchorClick(e, h)}
+                onClick={(e) => isInternalLink && handleAnchorClick(e, h)}
                 className={
-                  isWikilink
+                  isInternalLink
                     ? "cursor-pointer text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
                     : "text-primary underline underline-offset-2"
                 }
