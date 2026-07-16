@@ -560,6 +560,29 @@ export async function embedPage(
   return true
 }
 
+export type EmbeddingReindexState =
+  | { kind: "idle" }
+  | { kind: "running"; projectPath: string; done: number; total: number }
+  | { kind: "done"; projectPath: string; count: number }
+  | { kind: "error"; projectPath: string; message: string }
+
+let embeddingReindexState: EmbeddingReindexState = { kind: "idle" }
+const embeddingReindexListeners = new Set<() => void>()
+
+export function getEmbeddingReindexState(): EmbeddingReindexState {
+  return embeddingReindexState
+}
+
+export function subscribeEmbeddingReindexState(listener: () => void): () => void {
+  embeddingReindexListeners.add(listener)
+  return () => embeddingReindexListeners.delete(listener)
+}
+
+function setEmbeddingReindexState(state: EmbeddingReindexState): void {
+  embeddingReindexState = state
+  for (const listener of embeddingReindexListeners) listener()
+}
+
 /**
  * Embed every wiki content page that isn't already indexed (or re-embed
  * all when `force === true`). Driven from Settings → Embedding or on
@@ -576,14 +599,18 @@ export async function embedAllPages(
   lastEmbeddingError = null
 
   const pp = normalizePath(projectPath)
+  setEmbeddingReindexState({ kind: "running", projectPath: pp, done: 0, total: 0 })
 
   let tree: FileNode[]
   try {
     tree = await listDirectory(`${pp}/wiki`)
   } catch {
     if (options?.clearExisting) {
-      throw new Error("Could not read wiki tree; existing index was left unchanged.")
+      const message = "Could not read wiki tree; existing index was left unchanged."
+      setEmbeddingReindexState({ kind: "error", projectPath: pp, message })
+      throw new Error(message)
     }
+    setEmbeddingReindexState({ kind: "done", projectPath: pp, count: 0 })
     return 0
   }
 
@@ -690,9 +717,11 @@ export async function embedAllPages(
       // skip — individual file failure doesn't halt the batch
     }
     done++
+    setEmbeddingReindexState({ kind: "running", projectPath: pp, done, total: mdFiles.length })
     if (onProgress) onProgress(done, mdFiles.length)
   }
 
+  setEmbeddingReindexState({ kind: "done", projectPath: pp, count: indexed })
   return indexed
 }
 

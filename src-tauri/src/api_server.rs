@@ -11,14 +11,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::cors::{local_cors_headers, request_origin};
-use crate::{clip_server, commands, server_bind};
+use crate::{agent, clip_server, commands, server_bind};
 
 const PORT: u16 = 19828;
 const API_PREFIX: &str = "/api/v1";
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+const MAX_CHAT_BODY_BYTES: usize = 40 * 1024 * 1024;
 const MAX_FILE_CONTENT_BYTES: u64 = 2 * 1024 * 1024;
 const DEFAULT_MAX_FILES: usize = 2_000;
 const HARD_MAX_FILES: usize = 10_000;
@@ -171,7 +173,7 @@ fn process_request(app: AppHandle, mut request: tiny_http::Request) {
         })
         .collect();
 
-    let body = match read_body(&mut request) {
+    let body = match read_body(&mut request, body_limit_for_request(&method, &url)) {
         Ok(body) => body,
         Err(err) => {
             respond_error(request, 400, &err, origin.as_deref());
@@ -230,6 +232,10 @@ fn handle_request(
             "mcpEnabled": api_mcp_enabled(app),
             "allowUnauthenticated": api_allow_unauthenticated(app),
             "allowLanAccess": api_allow_lan_access(app),
+            "agent": {
+                "chat": true,
+                "streaming": false,
+            },
         }));
     }
     if !path.starts_with(API_PREFIX) {
@@ -242,6 +248,9 @@ fn handle_request(
         // and tells well-behaved clients to back off rather than
         // retry instantly the way 401 would.
         return err(503, "API server is disabled in Settings → API Server");
+    }
+    if is_agent_chat_request(&method, &path) && !is_token_authorized(app, query, headers) {
+        return err(401, "Unauthorized");
     }
     if !is_authorized(app, query, headers) {
         return err(401, "Unauthorized");
@@ -277,9 +286,9 @@ fn handle_request(
         (&Method::Post, ["projects", project_id, "sources", "rescan"]) => {
             handle_rescan(app, project_id)
         }
-        (&Method::Post, ["projects", project_id, "chat"]) => {
-            let _ = project_id;
-            err(501, "Chat API is not implemented in the local Rust API server yet. The existing chat/RAG pipeline currently lives in the WebView; expose it after moving the shared chat pipeline behind a backend command.")
+        (&Method::Post, ["projects", project_id, "chat"]) => handle_chat(app, project_id, body),
+        (&Method::Post, ["projects", project_id, "chat", session_id, "cancel"]) => {
+            handle_cancel_chat(app, project_id, session_id)
         }
         _ => err(404, "Not found"),
     }
@@ -310,13 +319,42 @@ fn allow_request() -> bool {
     true
 }
 
-fn read_body(request: &mut tiny_http::Request) -> Result<String, String> {
-    let mut limited = request.as_reader().take(MAX_BODY_BYTES as u64 + 1);
+fn is_agent_chat_request(method: &Method, path: &str) -> bool {
+    let parts = path
+        .trim_start_matches(API_PREFIX)
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    method == &Method::Post
+        && matches!(
+            parts.as_slice(),
+            ["projects", _, "chat"] | ["projects", _, "chat", _, "cancel"]
+        )
+}
+
+fn body_limit_for_request(method: &Method, url: &str) -> usize {
+    let (path, _) = split_url(url);
+    let parts = path
+        .trim_start_matches(API_PREFIX)
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if method == &Method::Post && matches!(parts.as_slice(), ["projects", _, "chat"]) {
+        MAX_CHAT_BODY_BYTES
+    } else {
+        MAX_BODY_BYTES
+    }
+}
+
+fn read_body(request: &mut tiny_http::Request, max_body_bytes: usize) -> Result<String, String> {
+    let mut limited = request.as_reader().take(max_body_bytes as u64 + 1);
     let mut bytes = Vec::new();
     limited
         .read_to_end(&mut bytes)
         .map_err(|e| format!("Failed to read body: {e}"))?;
-    if bytes.len() > MAX_BODY_BYTES {
+    if bytes.len() > max_body_bytes {
         return Err("Request body too large".to_string());
     }
     String::from_utf8(bytes).map_err(|_| "Request body must be UTF-8".to_string())
@@ -390,6 +428,10 @@ fn is_authorized(app: &AppHandle, query: &str, headers: &[(String, String)]) -> 
     if !api_auth_required(app) {
         return true;
     }
+    is_token_authorized(app, query, headers)
+}
+
+fn is_token_authorized(app: &AppHandle, query: &str, headers: &[(String, String)]) -> bool {
     let Some(token) = api_token(app) else {
         return false;
     };
@@ -1623,19 +1665,244 @@ fn handle_search(app: &AppHandle, project_id: &str, body: &str) -> ApiResponse {
             "ok": true,
             "projectId": project.id,
             "mode": search.mode,
-            "note": "Search uses the shared backend retrieval service. When embeddingConfig is enabled, the API automatically includes LanceDB vector results; clients may also pass queryEmbedding explicitly.",
+            "note": "Search uses the shared backend hybrid retrieval service, combining keyword, vector, and one-hop knowledge-graph candidates. When embeddingConfig is enabled, the API automatically includes LanceDB vector results; clients may also pass queryEmbedding explicitly.",
             "tokenHits": search.token_hits,
             "vectorHits": search.vector_hits,
+            "graphHits": search.graph_hits,
             "results": search.results,
         })),
         Err(e) => err(500, e),
     }
 }
 
+fn handle_chat(app: &AppHandle, project_id: &str, body: &str) -> ApiResponse {
+    let project = match resolve_project(app, project_id) {
+        Ok(project) => project,
+        Err(e) => return err(404, e),
+    };
+    let mut req: agent::AgentChatRequest = match serde_json::from_str(body) {
+        Ok(req) => req,
+        Err(e) => return err(400, format!("Invalid JSON: {e}")),
+    };
+    if req
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
+        req.session_id = Some(format!("api_{}", Uuid::new_v4()));
+    }
+    if req
+        .run_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
+        req.run_id = Some(format!("run_{}", Uuid::new_v4()));
+    }
+    let requested_session_id = req.session_id.clone();
+    if let Some(session_id) = requested_session_id.as_deref() {
+        if req.history.is_empty() && !req.history_explicit {
+            req.history = app
+                .state::<agent::session::AgentSessionStore>()
+                .recent_messages(&project.path, session_id, 12)
+                .into_iter()
+                .map(|message| agent::types::AgentConversationMessage {
+                    role: message.role,
+                    content: message.content,
+                })
+                .collect();
+        }
+    }
+    let runtime_config = load_agent_runtime_config(app, Some(&project.id));
+    let runtime = agent::AgentRuntime::new(
+        project.id.clone(),
+        project.path.clone(),
+        runtime_config.embedding,
+        runtime_config.llm,
+        runtime_config.web_search,
+        runtime_config.anytxt,
+    );
+    let user_message_for_session = req.message.clone();
+    let persist_session = req.persist_session;
+    let session_id = req.session_id.clone().unwrap_or_default();
+    let run_id = req.run_id.clone().unwrap_or_default();
+    let cancellation = app
+        .state::<agent::cancel::AgentCancellationRegistry>()
+        .start(&project.id, &session_id, &run_id);
+    let result =
+        tauri::async_runtime::block_on(runtime.run_once_with_cancel(req, Some(cancellation)));
+    app.state::<agent::cancel::AgentCancellationRegistry>()
+        .finish(&project.id, &session_id, &run_id);
+    match result {
+        Ok(mut response) => {
+            if persist_session {
+                app.state::<agent::session::AgentSessionStore>()
+                    .append_turn(
+                        &project.path,
+                        &project.id,
+                        &response.session_id,
+                        &user_message_for_session,
+                        &response.message,
+                    );
+            }
+            for event in &mut response.events {
+                event.redact_for_external_api();
+            }
+            ok(json!({
+                "ok": true,
+                "projectId": response.project_id,
+                "sessionId": response.session_id,
+                "mode": response.mode,
+                "message": {
+                    "role": "assistant",
+                    "content": response.message,
+                },
+                "references": response.references,
+                "toolEvents": response.tool_events,
+                "events": response.events,
+                "usage": response.usage,
+            }))
+        }
+        Err(e) if e == "message is required" => err(400, e),
+        Err(e) if e == "Agent turn cancelled" => err(499, e),
+        Err(e) => err(502, e),
+    }
+}
+
+fn handle_cancel_chat(app: &AppHandle, project_id: &str, session_id: &str) -> ApiResponse {
+    let project = match resolve_project(app, project_id) {
+        Ok(project) => project,
+        Err(e) => return err(404, e),
+    };
+    ok(json!({
+        "ok": true,
+        "cancelled": app
+            .state::<agent::cancel::AgentCancellationRegistry>()
+            .cancel(&project.id, session_id, None),
+        "sessionId": session_id,
+    }))
+}
+
 fn load_embedding_config(app: &AppHandle) -> Option<commands::search::SearchEmbeddingConfig> {
     let parsed = load_app_state(app)?;
     let value = parsed.get("embeddingConfig")?.clone();
     serde_json::from_value::<commands::search::SearchEmbeddingConfig>(value).ok()
+}
+
+#[derive(Debug, Clone, Default)]
+struct AgentRuntimeConfig {
+    embedding: Option<commands::search::SearchEmbeddingConfig>,
+    llm: Option<agent::provider::LlmConfig>,
+    web_search: Option<agent::tools::WebSearchConfig>,
+    anytxt: Option<agent::tools::AnyTxtConfig>,
+}
+
+fn project_llm_config(parsed: &Value, project_id: &str) -> Option<agent::provider::LlmConfig> {
+    let global = parsed.get("llmConfig").cloned();
+    let Some(project) = parsed
+        .get("projectLlmOverrides")
+        .and_then(|value| value.get(project_id))
+    else {
+        return global.and_then(|value| serde_json::from_value(value).ok());
+    };
+    if project.get("enabled").and_then(Value::as_bool) != Some(true) {
+        return global.and_then(|value| serde_json::from_value(value).ok());
+    }
+
+    // The frontend persists a resolved, non-secret profile. Merge the current
+    // provider override here so credential rotation and endpoint edits apply to
+    // native API calls without duplicating API keys in every project record.
+    let mut profile = project.get("profile")?.clone();
+    let profile_object = profile.as_object_mut()?;
+    let preset_id = project.get("presetId").and_then(Value::as_str)?;
+    let provider = parsed
+        .get("providerConfigs")
+        .and_then(|value| value.get(preset_id))
+        .and_then(Value::as_object);
+    // `customLlmPresets` is the authoritative registry. A stale providerConfigs
+    // entry may survive an interrupted multi-key settings save, so credentials
+    // alone must not resurrect a deleted custom preset.
+    let custom_preset_exists = parsed
+        .get("customLlmPresets")
+        .and_then(Value::as_array)
+        .map(|presets| {
+            presets
+                .iter()
+                .any(|preset| preset.get("id").and_then(Value::as_str) == Some(preset_id))
+        })
+        .unwrap_or(false);
+    // Match resolveProjectLlmConfig in src/lib/llm-task-routing.ts: deleting a
+    // custom preset must make every project that referenced it fall back to
+    // the global config, including projects that are not currently open.
+    if preset_id.starts_with("custom-") && !custom_preset_exists {
+        return global.and_then(|value| serde_json::from_value(value).ok());
+    }
+    if let Some(provider) = provider {
+        for key in [
+            "apiKey",
+            "apiMode",
+            "azureApiVersion",
+            "maxContextSize",
+            "reasoning",
+        ] {
+            if let Some(value) = provider.get(key) {
+                profile_object.insert(key.to_string(), value.clone());
+            }
+        }
+        if project
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+        {
+            if let Some(value) = provider.get("model") {
+                profile_object.insert("model".to_string(), value.clone());
+            }
+        }
+        if let Some(value) = provider.get("baseUrl") {
+            let endpoint_key =
+                if profile_object.get("provider").and_then(Value::as_str) == Some("ollama") {
+                    "ollamaUrl"
+                } else {
+                    "customEndpoint"
+                };
+            profile_object.insert(endpoint_key.to_string(), value.clone());
+        }
+    }
+    serde_json::from_value(profile).ok()
+}
+
+fn load_agent_runtime_config(app: &AppHandle, project_id: Option<&str>) -> AgentRuntimeConfig {
+    let Some(parsed) = load_app_state(app) else {
+        return AgentRuntimeConfig::default();
+    };
+    AgentRuntimeConfig {
+        embedding: parsed
+            .get("embeddingConfig")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+        llm: project_id
+            .and_then(|id| project_llm_config(&parsed, id))
+            .or_else(|| {
+                parsed
+                    .get("llmConfig")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+            }),
+        web_search: parsed
+            .get("searchApiConfig")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+        anytxt: parsed
+            .get("searchApiConfig")
+            .and_then(|value| value.get("anyTxt"))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2430,6 +2697,38 @@ mod tests {
     }
 
     #[test]
+    fn chat_endpoint_allows_larger_multimodal_bodies() {
+        assert_eq!(
+            body_limit_for_request(&Method::Post, "/api/v1/projects/current/chat"),
+            MAX_CHAT_BODY_BYTES
+        );
+        assert_eq!(
+            body_limit_for_request(&Method::Post, "/api/v1/projects/current/search"),
+            MAX_BODY_BYTES
+        );
+    }
+
+    #[test]
+    fn chat_routes_are_recognized_as_agent_requests() {
+        assert!(is_agent_chat_request(
+            &Method::Post,
+            "/api/v1/projects/current/chat"
+        ));
+        assert!(is_agent_chat_request(
+            &Method::Post,
+            "/api/v1/projects/current/chat/session-1/cancel"
+        ));
+        assert!(!is_agent_chat_request(
+            &Method::Post,
+            "/api/v1/projects/current/search"
+        ));
+        assert!(!is_agent_chat_request(
+            &Method::Get,
+            "/api/v1/projects/current/chat"
+        ));
+    }
+
+    #[test]
     fn api_config_shape_parses_enabled_and_unauthenticated_access() {
         // Standalone pure-function check to mirror what `api_enabled`
         // reads off `load_app_state`. Mirrors the JS-side shape
@@ -2497,5 +2796,89 @@ mod tests {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         assert!(!allow_lan_access_missing);
+    }
+
+    #[test]
+    fn project_llm_config_uses_profile_with_current_provider_credentials() {
+        let state = json!({
+            "llmConfig": { "provider": "openai", "apiKey": "global", "model": "gpt-global", "ollamaUrl": "", "customEndpoint": "", "maxContextSize": 1000 },
+            "providerConfigs": {
+                "deepseek": { "apiKey": "rotated", "model": "provider-model", "baseUrl": "https://new.example/v1", "apiMode": "chat_completions" }
+            },
+            "projectLlmOverrides": {
+                "project-a": {
+                    "enabled": true,
+                    "presetId": "deepseek",
+                    "model": "project-model",
+                    "profile": { "provider": "custom", "model": "project-model", "ollamaUrl": "", "customEndpoint": "https://old.example/v1", "maxContextSize": 64000, "apiMode": "chat_completions" }
+                }
+            }
+        });
+        let config = project_llm_config(&state, "project-a").expect("project config");
+        assert_eq!(config.provider, "custom");
+        assert_eq!(config.api_key, "rotated");
+        assert_eq!(config.model, "project-model");
+        assert_eq!(config.custom_endpoint, "https://new.example/v1");
+    }
+
+    #[test]
+    fn project_llm_config_falls_back_for_disabled_or_legacy_override() {
+        let state = json!({
+            "llmConfig": { "provider": "openai", "apiKey": "global", "model": "gpt-global", "ollamaUrl": "", "customEndpoint": "", "maxContextSize": 1000 },
+            "projectLlmOverrides": {
+                "disabled": { "enabled": false, "presetId": "anthropic", "model": "claude" },
+                "legacy": { "enabled": true, "presetId": "anthropic", "model": "claude" }
+            }
+        });
+        assert_eq!(
+            project_llm_config(&state, "disabled").unwrap().model,
+            "gpt-global"
+        );
+        assert!(project_llm_config(&state, "legacy").is_none());
+    }
+
+    #[test]
+    fn project_llm_config_falls_back_after_custom_preset_is_deleted() {
+        let state = json!({
+            "llmConfig": { "provider": "openai", "apiKey": "global", "model": "gpt-global", "ollamaUrl": "", "customEndpoint": "", "maxContextSize": 1000 },
+            "providerConfigs": {
+                "custom-deleted": { "apiKey": "stale-secret", "model": "stale-model", "baseUrl": "https://old.example/v1" }
+            },
+            "customLlmPresets": [],
+            "projectLlmOverrides": {
+                "project-b": {
+                    "enabled": true,
+                    "presetId": "custom-deleted",
+                    "model": "stale-model",
+                    "profile": { "provider": "custom", "model": "stale-model", "ollamaUrl": "", "customEndpoint": "https://old.example/v1", "maxContextSize": 64000 }
+                }
+            }
+        });
+        let config = project_llm_config(&state, "project-b").expect("global fallback");
+        assert_eq!(config.model, "gpt-global");
+        assert_eq!(config.api_key, "global");
+    }
+
+    #[test]
+    fn project_llm_config_uses_registered_custom_preset() {
+        let state = json!({
+            "llmConfig": { "provider": "openai", "apiKey": "global", "model": "gpt-global", "ollamaUrl": "", "customEndpoint": "", "maxContextSize": 1000 },
+            "customLlmPresets": [{ "id": "custom-live", "label": "Live" }],
+            "providerConfigs": {
+                "custom-live": { "apiKey": "live-secret", "model": "live-model", "baseUrl": "https://live.example/v1" }
+            },
+            "projectLlmOverrides": {
+                "project-c": {
+                    "enabled": true,
+                    "presetId": "custom-live",
+                    "model": "",
+                    "profile": { "provider": "custom", "model": "old-model", "ollamaUrl": "", "customEndpoint": "https://old.example/v1", "maxContextSize": 64000 }
+                }
+            }
+        });
+        let config = project_llm_config(&state, "project-c").expect("custom config");
+        assert_eq!(config.model, "live-model");
+        assert_eq!(config.api_key, "live-secret");
+        assert_eq!(config.custom_endpoint, "https://live.example/v1");
     }
 }

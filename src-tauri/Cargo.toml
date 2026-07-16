@@ -1,6 +1,6 @@
 [package]
 name = "llm-wiki"
-version = "0.5.4"
+version = "0.6.4"
 description = "LLM Wiki - A personal knowledge base for LLM concepts"
 authors = []
 edition = "2021"
@@ -66,6 +66,9 @@ sha2 = "0.10"
 md-5 = "0.10"
 notify = "8"
 walkdir = "2"
+epub = "2.1.5"
+mobi = "0.8"
+html2text = { version = "0.17.1", default-features = false, features = ["xml"] }
 
 # Phase 1 (backend foundation): password hashing, persisted sessions,
 # user-account TOML, session-id randomness, faster mutex for hot paths.

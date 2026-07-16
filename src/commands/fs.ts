@@ -237,6 +237,61 @@ export async function getFileMd5(_path: string): Promise<string> {
   return ""
 }
 
+export interface FileHistoryEntry {
+  id: string
+  path: string
+  timestamp: number
+  author: string
+  tool: string
+  content: string
+}
+
+function unsupportedBrowserCommand(command: string): never {
+  throw new Error(`${command} is not available through the browser HTTP API`)
+}
+
+export async function listFileHistory(
+  _projectPath: string,
+  _filePath: string,
+): Promise<FileHistoryEntry[]> {
+  return unsupportedBrowserCommand("listFileHistory")
+}
+
+export async function restoreFileHistory(
+  _projectPath: string,
+  _filePath: string,
+  _entryId: string,
+): Promise<string> {
+  return unsupportedBrowserCommand("restoreFileHistory")
+}
+
+export interface PageLinkEntry {
+  title: string
+  path?: string
+  snippet?: string
+}
+
+export interface PageLinksResponse {
+  outgoing: PageLinkEntry[]
+  backlinks: PageLinkEntry[]
+  missing: PageLinkEntry[]
+}
+
+export async function getPageLinks(
+  _projectPath: string,
+  _filePath: string,
+): Promise<PageLinksResponse> {
+  return unsupportedBrowserCommand("getPageLinks")
+}
+
+export async function createMissingWikiPage(
+  _projectPath: string,
+  _title: string,
+  _content?: string,
+): Promise<string> {
+  return unsupportedBrowserCommand("createMissingWikiPage")
+}
+
 function assertAbsoluteFsPath(operation: string, path: string): void {
   if (!isAbsolutePath(path)) {
     throw new Error(`${operation} requires an absolute path: ${path}`)

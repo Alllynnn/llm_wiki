@@ -1,13 +1,14 @@
 import { anyTxtSearchSmart, hasConfiguredAnyTxt } from "./anytxt-search"
 import { hasConfiguredSearchProvider, resolveSearchConfig, webSearch } from "./web-search"
 import { streamChat } from "./llm-client"
-import { autoIngest, currentWikiDate } from "./ingest"
-import { writeFile, readFile, listDirectory } from "@/commands/fs"
+import { currentWikiDate } from "./ingest"
+import { writeFile, readFile } from "@/commands/fs"
 import { useWikiStore, type LlmConfig, type SearchApiConfig } from "@/stores/wiki-store"
 import { useResearchStore } from "@/stores/research-store"
 import { normalizePath } from "@/lib/path-utils"
 import { buildLanguageDirective } from "@/lib/output-language"
 import { makeQueryFileName } from "@/lib/wiki-filename"
+import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 
 const MAX_RESEARCH_SOURCES = 20
 
@@ -23,6 +24,28 @@ interface CollectResearchSourceOptions {
 interface ResearchSourceCollection {
   results: import("./web-search").WebSearchResult[]
   errors: string[]
+}
+
+export function noResearchSourcesTaskPatch(sourceErrors: string[]): {
+  status: "done" | "error"
+  synthesis: string
+  error: string | null
+} {
+  // If every selected source produced zero usable results and at least
+  // one source failed, surface the failure state explicitly. Otherwise
+  // the UI shows "completed" for a task that could not actually search.
+  if (sourceErrors.length > 0) {
+    return {
+      status: "error",
+      synthesis: "",
+      error: sourceErrors.join("\n"),
+    }
+  }
+  return {
+    status: "done",
+    synthesis: "No research sources found.",
+    error: null,
+  }
 }
 
 export function makeDeepResearchFileName(topic: string, now: Date = new Date()): {
@@ -189,10 +212,7 @@ async function executeResearch(
     if (!updateTaskIfActive(pp, taskId, { webResults })) return
 
     if (webResults.length === 0) {
-      if (!updateTaskIfActive(pp, taskId, {
-        status: "done",
-        synthesis: sourceErrors.length > 0 ? sourceErrors.join("\n") : "No research sources found.",
-      })) return
+      if (!updateTaskIfActive(pp, taskId, noResearchSourcesTaskPatch(sourceErrors))) return
       if (isActiveProjectPath(pp)) onTaskFinished(pp, llmConfig, searchConfig)
       return
     }
@@ -309,23 +329,29 @@ async function executeResearch(
       savedPath,
     })) return
 
-    // Refresh tree
     try {
-      const tree = await listDirectory(pp)
-      if (isActiveProjectPath(pp)) {
-        useWikiStore.getState().setFileTree(tree)
-        useWikiStore.getState().bumpDataVersion()
-      }
+      await refreshProjectFileTree(pp, { bumpDataVersion: true })
     } catch {
       // ignore
     }
 
-    // Auto-ingest the research result to generate entities, concepts, cross-references
-    if (isActiveProjectPath(pp)) {
-      autoIngest(pp, `${pp}/${savedPath}`, llmConfig).catch((err) => {
-        console.error("Failed to auto-ingest research result:", err)
-      })
+    // The query page no longer goes through source ingest, so index it here
+    // directly. This keeps freshly generated research available to hybrid
+    // search without recreating the review-amplifying ingest loop.
+    const embeddingConfig = useWikiStore.getState().embeddingConfig
+    if (embeddingConfig.enabled && embeddingConfig.model) {
+      try {
+        const { embedPage } = await import("@/lib/embedding")
+        await embedPage(pp, fileName.replace(/\.md$/i, ""), `Research: ${topic}`, pageContent, embeddingConfig)
+      } catch (err) {
+        console.warn("[DeepResearch] failed to index generated query page:", err)
+      }
     }
+
+    // A research result is already a generated wiki page. Feeding it back
+    // through source ingest creates a second summary page and recursively
+    // produces low-value review suggestions from its own gaps/references.
+    // Keep it directly searchable as the query page instead.
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     updateTaskIfActive(pp, taskId, {

@@ -1,6 +1,6 @@
 import { getConfigKey, setConfigKey, deleteConfigKey } from "@/lib/user-config"
 import type { WikiProject } from "@/types/wiki"
-import type { ApiConfig, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig } from "@/stores/wiki-store"
+import type { ApiConfig, CustomLlmPreset, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProjectLlmOverride, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig, TaskModelRoutingConfig } from "@/stores/wiki-store"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { normalizePath } from "@/lib/path-utils"
 import { DEFAULT_ZOOM_LEVEL, clampZoomLevel } from "@/stores/zoom-store"
@@ -37,6 +37,11 @@ export async function addToRecentProjects(
 const LLM_CONFIG_KEY = "llmConfig"
 const PROVIDER_CONFIGS_KEY = "providerConfigs"
 const ACTIVE_PRESET_KEY = "activePresetId"
+const TASK_MODEL_ROUTING_KEY = "taskModelRouting"
+const PROJECT_LLM_OVERRIDES_KEY = "projectLlmOverrides"
+const CUSTOM_LLM_PRESETS_KEY = "customLlmPresets"
+let projectLlmOverrideWrite = Promise.resolve()
+let customLlmPresetWrite = Promise.resolve()
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
   await setConfigKey(LLM_CONFIG_KEY, config)
@@ -54,12 +59,80 @@ export async function loadProviderConfigs(): Promise<ProviderConfigs | null> {
   return (await getConfigKey<ProviderConfigs>(PROVIDER_CONFIGS_KEY)) ?? null
 }
 
+export async function saveCustomLlmPresets(presets: CustomLlmPreset[]): Promise<void> {
+  const normalized = normalizeCustomLlmPresets(presets)
+  const write = customLlmPresetWrite.then(() => setConfigKey(CUSTOM_LLM_PRESETS_KEY, normalized))
+  customLlmPresetWrite = write.catch(() => {})
+  await write
+}
+
+export async function loadCustomLlmPresets(): Promise<CustomLlmPreset[]> {
+  return normalizeCustomLlmPresets(await getConfigKey<unknown>(CUSTOM_LLM_PRESETS_KEY))
+}
+
+function normalizeCustomLlmPresets(value: unknown): CustomLlmPreset[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const normalized: CustomLlmPreset[] = []
+  for (const entry of value) {
+    if (normalized.length >= 50) break
+    const candidate = entry as Partial<CustomLlmPreset> | null
+    if (!candidate || typeof candidate !== "object") continue
+    if (typeof candidate.id !== "string" || !/^custom-[A-Za-z0-9-]{1,80}$/.test(candidate.id)) continue
+    const label = typeof candidate.label === "string" ? candidate.label.trim().slice(0, 80) : ""
+    if (!label || seen.has(candidate.id)) continue
+    seen.add(candidate.id)
+    normalized.push({ id: candidate.id, label })
+  }
+  return normalized
+}
+
 export async function saveActivePresetId(id: string | null): Promise<void> {
   await setConfigKey(ACTIVE_PRESET_KEY, id)
 }
 
 export async function loadActivePresetId(): Promise<string | null> {
   return (await getConfigKey<string | null>(ACTIVE_PRESET_KEY)) ?? null
+}
+
+export async function saveTaskModelRouting(config: TaskModelRoutingConfig): Promise<void> {
+  await setConfigKey(TASK_MODEL_ROUTING_KEY, config)
+}
+
+export async function loadTaskModelRouting(): Promise<TaskModelRoutingConfig | null> {
+  const saved = await getConfigKey<Partial<TaskModelRoutingConfig>>(TASK_MODEL_ROUTING_KEY)
+  if (!saved) return null
+  return {
+    chatPresetId: typeof saved.chatPresetId === "string" ? saved.chatPresetId : null,
+    ingestPresetId: typeof saved.ingestPresetId === "string" ? saved.ingestPresetId : null,
+  }
+}
+
+export async function saveProjectLlmOverride(
+  projectId: string,
+  config: ProjectLlmOverride,
+): Promise<void> {
+  const write = projectLlmOverrideWrite.then(async () => {
+    const existing = (await getConfigKey<Record<string, ProjectLlmOverride>>(
+      PROJECT_LLM_OVERRIDES_KEY,
+    )) ?? {}
+    await setConfigKey(PROJECT_LLM_OVERRIDES_KEY, { ...existing, [projectId]: config })
+  })
+  projectLlmOverrideWrite = write.catch(() => {})
+  await write
+}
+
+export async function loadProjectLlmOverride(projectId: string): Promise<ProjectLlmOverride> {
+  const existing = await getConfigKey<Record<string, Partial<ProjectLlmOverride>>>(
+    PROJECT_LLM_OVERRIDES_KEY,
+  )
+  const saved = existing?.[projectId]
+  return {
+    enabled: saved?.enabled === true,
+    presetId: typeof saved?.presetId === "string" ? saved.presetId : null,
+    model: typeof saved?.model === "string" ? saved.model : "",
+    profile: saved?.profile,
+  }
 }
 
 const SEARCH_API_KEY = "searchApiConfig"

@@ -93,6 +93,12 @@ const EXT_MAP: Record<string, FileCategory> = {
   m4a: "audio",
   wma: "audio",
 
+  // Standalone Mermaid sources use the same renderer as fenced Mermaid
+  // blocks. Keep them in the code family so callers load their UTF-8 source
+  // before handing the content to FilePreview.
+  mmd: "code",
+  mermaid: "code",
+
   // PDF
   pdf: "pdf",
 
@@ -110,6 +116,7 @@ const EXT_MAP: Record<string, FileCategory> = {
   numbers: "document",
   key: "document",
   epub: "document",
+  mobi: "document",
 
   // Data
   json: "data",
@@ -140,6 +147,8 @@ export const EXTRACTED_TEXT_PREVIEW_EXTENSIONS = new Set([
   "odt",
   "ods",
   "odp",
+  "epub",
+  "mobi",
 ])
 
 export function getFileExtension(filePath: string): string {
@@ -177,6 +186,8 @@ export function getCodeLanguage(filePath: string): string {
     yaml: "yaml",
     yml: "yaml",
     xml: "xml",
+    mmd: "mermaid",
+    mermaid: "mermaid",
     sh: "bash",
     bash: "bash",
     toml: "toml",

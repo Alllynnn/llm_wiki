@@ -234,24 +234,11 @@ function detectLatinLanguage(text: string): string | null {
   // Vietnamese — VN-EXCLUSIVE tone/hook marks only.
   // Earlier versions included shared Latin diacritics (à á â ã è é ê ì í ò ó ô õ
   // ù ú ă ý) which made any French / Portuguese / Spanish / Italian / Romanian
-  // text with common diacritics false-positive as Vietnamese.
-  //
-  // The char class lists Vietnamese-specific tone/hook/horn composites that
-  // don't appear in other major Latin-script languages detected here. Earlier
-  // versions classified on a single match, but that flipped long English texts
-  // to Vietnamese on any stray transliterated proper noun. Two thresholds now:
-  //   - ≥2 distinct VN-exclusive matches OR
-  //   - ≥1 VN match AND a common Vietnamese function word
-  // matching the necessary-but-not-sufficient gate used for German / French /
-  // Italian / Spanish.
-  const vnCharRe = /[ảạắằẳẵặấầẩẫậđẻẽẹếềểễệỉĩịỏọốồổỗộơớờởỡợủũụưứừửữựỷỹỵ]/g
-  const vnMatches = lower.match(vnCharRe)
-  if (vnMatches) {
-    const distinctVn = new Set(vnMatches).size
-    const hasVnWord = /\b(và|của|là|được|không|cho|trong|với|này|những|một|các|có|để|người|từ|nước|hay|hoặc|thì|sẽ|đã|đang|còn)\b/.test(lower)
-    if (distinctVn >= 2 || (distinctVn >= 1 && hasVnWord)) {
-      return "Vietnamese"
-    }
+  // text with common diacritics false-positive as Vietnamese. The chars below
+  // are Vietnamese-specific tone/hook/horn composites that don't appear in
+  // other major languages detected here.
+  if (/[ảạắằẳẵặấầẩẫậđẻẽẹếềểễệỉĩịỏọốồổỗộơớờởỡợủũụưứừửữựỷỹỵ]/.test(lower)) {
+    return "Vietnamese"
   }
 
   // Turkish — require Turkish-unique chars (ğ, ı dotless, ş). Earlier versions
@@ -261,28 +248,17 @@ function detectLatinLanguage(text: string): string | null {
     return "Turkish"
   }
 
-  // Polish — distinctive characters. Single-char trigger flipped English
-  // documents containing a stray `ć` or `ó` to Polish; use the same
-  // ≥2-distinct-chars-OR-char+word gate that Vietnamese uses.
-  const plCharRe = /[ąćęłńóśźż]/g
-  const plMatches = lower.match(plCharRe)
-  if (plMatches) {
-    const distinctPl = new Set(plMatches).size
-    const hasPlWord = /\b(że|się|jest|który|która|które|oraz|lub|aby|czy|jako|przez|tylko|także|między|nasze)\b/.test(lower)
-    if (distinctPl >= 2 || (distinctPl >= 1 && hasPlWord)) {
-      return "Polish"
-    }
+  // Polish — use characters that distinguish it from neighboring
+  // Latin-script languages. `ó` is intentionally excluded because
+  // Czech also uses it; treating `ó` alone as Polish prevented common
+  // Czech text from ever reaching the Czech detector below.
+  if (/[ąćęłńśźż]/.test(lower)) {
+    return "Polish"
   }
 
-  // Czech/Slovak — háčky and čárky. Same gate as Polish.
-  const csCharRe = /[ěšžřďťňů]/g
-  const csMatches = lower.match(csCharRe)
-  if (csMatches) {
-    const distinctCs = new Set(csMatches).size
-    const hasCsWord = /\b(že|který|která|které|protože|nebo|jako|aby|však|také|jenom|nějaký|mezi)\b/.test(lower)
-    if (distinctCs >= 2 || (distinctCs >= 1 && hasCsWord)) {
-      return "Czech"
-    }
+  // Czech/Slovak — háčky and čárky
+  if (/[ěšžřďťňů]/.test(lower)) {
+    return "Czech"
   }
 
   // Romanian — distinctive characters
@@ -290,15 +266,9 @@ function detectLatinLanguage(text: string): string | null {
     return "Romanian"
   }
 
-  // Hungarian — double acute accents. Same gate.
-  const huCharRe = /[őű]/g
-  const huMatches = lower.match(huCharRe)
-  if (huMatches) {
-    const distinctHu = new Set(huMatches).size
-    const hasHuWord = /\b(és|hogy|vagy|nem|egy|az|ez|van|mint|azonban|mert|mivel|tehát)\b/.test(lower)
-    if (distinctHu >= 2 || (distinctHu >= 1 && hasHuWord)) {
-      return "Hungarian"
-    }
+  // Hungarian — double acute accents
+  if (/[őű]/.test(lower)) {
+    return "Hungarian"
   }
 
   // German — common patterns

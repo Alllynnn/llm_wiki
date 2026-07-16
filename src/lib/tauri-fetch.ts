@@ -1,3 +1,6 @@
+import { proxyFetch } from "@/lib/api"
+import { isLocalOrPrivateHttpEndpoint } from "@/lib/llm-providers"
+
 /**
  * Shared HTTP helpers routed through Tauri's Rust-backed plugin so
  * third-party endpoints that don't set browser-friendly CORS headers
@@ -27,6 +30,26 @@ let pluginFetchPromise: Promise<typeof globalThis.fetch> | null = null
  * import rather than trying to .catch() an error that happens later.
  */
 const isNodeEnv = typeof window === "undefined"
+const isTauriEnv = !isNodeEnv && "__TAURI_INTERNALS__" in window
+
+const browserProxyAwareFetch: typeof globalThis.fetch = async (input, init) => {
+  if (typeof input !== "string" && !(input instanceof URL)) {
+    return globalThis.fetch(input, init)
+  }
+  const url = typeof input === "string"
+    ? input
+    : input.toString()
+  const body = init?.body
+  const resolved = new URL(url, window.location.href)
+  if (
+    resolved.origin === window.location.origin ||
+    isLocalOrPrivateHttpEndpoint(resolved.href) ||
+    (body != null && typeof body !== "string")
+  ) {
+    return globalThis.fetch(input, init)
+  }
+  return proxyFetch(resolved.href, init)
+}
 
 /**
  * Returns a fetch function that routes through Tauri's HTTP plugin in
@@ -43,6 +66,8 @@ export function getHttpFetch(): Promise<typeof globalThis.fetch> {
     if (isNodeEnv) {
       // Bind so `this === globalThis` — Node's fetch requires it.
       pluginFetchPromise = Promise.resolve(globalThis.fetch.bind(globalThis))
+    } else if (!isTauriEnv) {
+      pluginFetchPromise = Promise.resolve(browserProxyAwareFetch)
     } else {
       pluginFetchPromise = import("@tauri-apps/plugin-http")
         .then((m) => m.fetch as unknown as typeof globalThis.fetch)

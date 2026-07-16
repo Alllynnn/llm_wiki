@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest"
 import type { FileNode } from "@/types/wiki"
 import {
+  buildProjectPathIndexFromTree,
   findInTreeByName,
   resolveMarkdownPageHref,
   resolveRelatedSlug,
   resolveSourceName,
+  resolveSourceReference,
   resolveWikiPathFromBrowserPath,
   unwrapWikilink,
 } from "./wiki-page-resolver"
@@ -41,6 +43,8 @@ const TREE: FileNode[] = [
     ]),
   ]),
 ]
+
+const INDEX = buildProjectPathIndexFromTree(TREE)
 
 describe("unwrapWikilink", () => {
   it("unwraps a bare [[target]]", () => {
@@ -104,6 +108,11 @@ describe("findInTreeByName", () => {
 
   it("returns null when nothing matches", () => {
     expect(findInTreeByName(TREE, "missing.md", `${WIKI}/`)).toBeNull()
+  })
+
+  it("deduplicates overlapping paths in the project index", () => {
+    const index = buildProjectPathIndexFromTree([...TREE, ...TREE])
+    expect(index.filesByName.get("report.pdf")).toHaveLength(1)
   })
 })
 
@@ -229,5 +238,27 @@ describe("resolveSourceName", () => {
     expect(resolveSourceName(TREE, "wiki/sources/paper.md", SOURCES)).toBe(
       `${WIKI}/sources/paper.md`,
     )
+  })
+})
+
+describe("resolveSourceReference", () => {
+  it("normalizes HTTP sources and keeps local sources resolvable", () => {
+    expect(resolveSourceReference(INDEX, "https://example.com/source", SOURCES)).toEqual({
+      kind: "external",
+      url: "https://example.com/source",
+    })
+    expect(resolveSourceReference(INDEX, "report.pdf", SOURCES)).toEqual({
+      kind: "local",
+      path: `${SOURCES}/report.pdf`,
+    })
+  })
+
+  it("rejects credential-bearing and non-HTTP URL schemes", () => {
+    expect(resolveSourceReference(INDEX, "https://user:secret@example.com/file", SOURCES)).toEqual({
+      kind: "missing",
+    })
+    expect(resolveSourceReference(INDEX, "javascript:alert(1)", SOURCES)).toEqual({
+      kind: "missing",
+    })
   })
 })

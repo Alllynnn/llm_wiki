@@ -20,12 +20,14 @@ export function buildProjectPathIndexFromTree(tree: FileNode[]): ProjectPathInde
 
   function walk(nodes: FileNode[]) {
     for (const node of nodes) {
-      const entry: ProjectPathIndexEntry = { name: node.name, path: node.path }
-      byPath.set(node.path, entry)
-      if (!node.is_dir) {
-        const bucket = filesByName.get(node.name)
-        if (bucket) bucket.push(entry)
-        else filesByName.set(node.name, [entry])
+      if (!byPath.has(node.path)) {
+        const entry: ProjectPathIndexEntry = { name: node.name, path: node.path }
+        byPath.set(node.path, entry)
+        if (!node.is_dir) {
+          const bucket = filesByName.get(node.name)
+          if (bucket) bucket.push(entry)
+          else filesByName.set(node.name, [entry])
+        }
       }
       if (node.is_dir && node.children) walk(node.children)
     }
@@ -56,6 +58,24 @@ export function unwrapWikilink(s: string): { slug: string; label: string } {
   const target = m[1].trim()
   const alias = m[2]?.trim()
   return { slug: target, label: alias && alias.length > 0 ? alias : target }
+}
+
+export type SourceReferenceResolution =
+  | { kind: "external"; url: string }
+  | { kind: "local"; path: string }
+  | { kind: "missing" }
+
+export function resolveSourceReference(
+  treeOrIndex: PathLookup,
+  ref: string,
+  sourcesRoot: string | null,
+): SourceReferenceResolution {
+  const trimmedRef = ref.trim()
+  const externalUrl = normalizeHttpUrl(trimmedRef)
+  if (externalUrl) return { kind: "external", url: externalUrl }
+  if (!sourcesRoot) return { kind: "missing" }
+  const path = resolveSourceName(treeOrIndex, trimmedRef, sourcesRoot)
+  return path ? { kind: "local", path } : { kind: "missing" }
 }
 
 /**
@@ -323,4 +343,16 @@ function normalizeRelativePath(path: string): string {
 function lastPathSegment(path: string): string {
   const parts = path.split("/").filter(Boolean)
   return parts[parts.length - 1] ?? path
+}
+
+function normalizeHttpUrl(ref: string): string | null {
+  if (/[\u0000-\u001f\u007f]/u.test(ref)) return null
+  try {
+    const url = new URL(ref)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null
+    if (!url.hostname || url.username || url.password) return null
+    return url.href
+  } catch {
+    return null
+  }
 }

@@ -6,7 +6,27 @@ import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { BASE_FONT_SIZE_PX, useZoomStore } from "@/stores/zoom-store"
 import { listDirectory, openProject } from "@/commands/fs"
-import { getLastProject, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMineruConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadActivePresetId, loadProxyConfig, loadSourceWatchConfig, loadApiConfig, loadGeneralConfig, loadZoomLevel } from "@/lib/project-store"
+import {
+  getLastProject,
+  saveLastProject,
+  loadLlmConfig,
+  loadLanguage,
+  loadSearchApiConfig,
+  loadEmbeddingConfig,
+  loadMineruConfig,
+  loadMultimodalConfig,
+  loadOutputLanguage,
+  loadProviderConfigs,
+  loadCustomLlmPresets,
+  loadActivePresetId,
+  loadTaskModelRouting,
+  loadProjectLlmOverride,
+  loadProxyConfig,
+  loadSourceWatchConfig,
+  loadApiConfig,
+  loadGeneralConfig,
+  loadZoomLevel,
+} from "@/lib/project-store"
 import { loadReviewItems, loadLintItems, loadChatHistory } from "@/lib/persist"
 import { setupAutoSave } from "@/lib/auto-save"
 import { AppLayout } from "@/components/layout/app-layout"
@@ -159,11 +179,14 @@ function App() {
     const savedConfig = await loadLlmConfig()
     if (savedConfig) {
       useWikiStore.getState().setLlmConfig(savedConfig)
+      useWikiStore.getState().setGlobalLlmConfig(savedConfig)
     }
     const savedProviderConfigs = await loadProviderConfigs()
     if (savedProviderConfigs) {
       useWikiStore.getState().setProviderConfigs(savedProviderConfigs)
     }
+    const savedCustomLlmPresets = await loadCustomLlmPresets()
+    useWikiStore.getState().setCustomLlmPresets(savedCustomLlmPresets)
     const savedActivePreset = await loadActivePresetId()
     if (savedActivePreset) {
       useWikiStore.getState().setActivePresetId(savedActivePreset)
@@ -174,17 +197,22 @@ function App() {
       // `llmConfig` snapshot from a previous launch would keep the
       // old value. Overrides still win, so an explicit user choice
       // is preserved.
-      const { LLM_PRESETS } = await import("@/components/settings/llm-presets")
+      const { findLlmPreset } = await import("@/components/settings/llm-presets")
       const { resolveConfig } = await import("@/components/settings/preset-resolver")
-      const preset = LLM_PRESETS.find((p) => p.id === savedActivePreset)
+      const preset = findLlmPreset(savedActivePreset, savedCustomLlmPresets)
       if (preset) {
         const currentFallback = useWikiStore.getState().llmConfig
         const override = (savedProviderConfigs ?? {})[savedActivePreset]
         const resolved = resolveConfig(preset, override, currentFallback)
         useWikiStore.getState().setLlmConfig(resolved)
+        useWikiStore.getState().setGlobalLlmConfig(resolved)
         const { saveLlmConfig } = await import("@/lib/project-store")
         await saveLlmConfig(resolved)
       }
+    }
+    const savedTaskModelRouting = await loadTaskModelRouting()
+    if (savedTaskModelRouting) {
+      useWikiStore.getState().setTaskModelRouting(savedTaskModelRouting)
     }
     const savedSearchConfig = await loadSearchApiConfig()
     if (savedSearchConfig) {
@@ -263,6 +291,16 @@ function App() {
       await resetProjectState()
 
       setProject(proj)
+      const projectLlmOverride = await loadProjectLlmOverride(proj.id)
+      const llmState = useWikiStore.getState()
+      const { resolveProjectLlmConfig } = await import("@/lib/llm-task-routing")
+      llmState.setProjectLlmOverride(projectLlmOverride)
+      llmState.setLlmConfig(resolveProjectLlmConfig(
+        llmState.globalLlmConfig,
+        llmState.providerConfigs,
+        projectLlmOverride,
+        llmState.customLlmPresets,
+      ))
       // Per-project override takes precedence; otherwise fall back to the
       // user's global setting, and only then to "auto". Without the global
       // fallback, opening a project that never had a per-project override

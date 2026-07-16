@@ -84,6 +84,42 @@ function extractedTextLabel(filePath: string): string {
   }
 }
 
+export function parseDelimitedContent(content: string, delimiter: string, maxRows = 500): string[][] {
+  const rows: string[][] = []
+  let cells: string[] = []
+  let current = ""
+  let quoted = false
+  const normalized = content.replace(/\r\n/g, "\n")
+  for (let index = 0; index < normalized.length && rows.length < maxRows; index += 1) {
+    const char = normalized[index]
+    if (char === '"') {
+      if (quoted && normalized[index + 1] === '"') {
+        current += '"'
+        index += 1
+      } else {
+        quoted = !quoted
+      }
+    } else if (char === delimiter && !quoted) {
+      cells.push(current)
+      current = ""
+    } else {
+      current += char
+    }
+    if (char === "\n" && !quoted) {
+      current = current.slice(0, -1)
+      cells.push(current)
+      rows.push(cells)
+      cells = []
+      current = ""
+    }
+  }
+  if ((current || cells.length > 0) && rows.length < maxRows) {
+    cells.push(current)
+    rows.push(cells)
+  }
+  return rows
+}
+
 function ImagePreview({ filePath, fileName }: { filePath: string; fileName: string }) {
   const projectPath = useWikiStore((s) => s.project?.path ?? "")
   const src = fileRawUrl(projectPath, filePath)

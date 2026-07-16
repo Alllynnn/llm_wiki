@@ -19,6 +19,97 @@ export interface ChatSendOptions {
   useAnyTxtSearch: boolean
 }
 
+export interface ChatSkillOption {
+  id: string
+  name: string
+  description?: string
+  source: string
+}
+
+interface SlashSkillTrigger {
+  start: number
+  end: number
+  query: string
+}
+
+interface SlashSkillTokenEdit {
+  value: string
+  cursor: number
+}
+
+export type SkillChipDeleteTarget = "first" | "last" | null
+
+export function findSlashSkillTrigger(value: string, cursor: number): SlashSkillTrigger | null {
+  if (cursor < 0 || cursor > value.length) return null
+  const prefix = value.slice(0, cursor)
+  const match = /(^|\s)\/([^\s/]*)$/.exec(prefix)
+  if (!match) return null
+  const query = match[2] ?? ""
+  const suffixEnd = value.slice(cursor).search(/\s/)
+  return {
+    start: cursor - query.length - 1,
+    end: suffixEnd === -1 ? value.length : cursor + suffixEnd,
+    query,
+  }
+}
+
+export function findContextFileTrigger(value: string, cursor: number): SlashSkillTrigger | null {
+  if (cursor < 0 || cursor > value.length) return null
+  const prefix = value.slice(0, cursor)
+  const match = /(^|\s)@([^\s@]*)$/.exec(prefix)
+  if (!match) return null
+  const query = match[2] ?? ""
+  const suffixEnd = value.slice(cursor).search(/\s/)
+  return {
+    start: cursor - query.length - 1,
+    end: suffixEnd === -1 ? value.length : cursor + suffixEnd,
+    query,
+  }
+}
+
+export function filterSlashSkillOptions(
+  skills: ChatSkillOption[],
+  query: string,
+  sourceLabel: (source: string) => string,
+  limit = Number.POSITIVE_INFINITY,
+): ChatSkillOption[] {
+  const normalized = query.trim().toLowerCase()
+  return skills
+    .filter((skill) => !normalized || [
+      skill.name,
+      skill.id,
+      skill.description ?? "",
+      sourceLabel(skill.source),
+    ].some((part) => part.toLowerCase().includes(normalized)))
+    .slice(0, limit)
+}
+
+export function removeSlashSkillToken(
+  value: string,
+  trigger: SlashSkillTrigger,
+): SlashSkillTokenEdit {
+  const before = value.slice(0, trigger.start)
+  const after = value.slice(trigger.end)
+  const needsSpacer = before.length > 0 && after.length > 0 && !/\s$/.test(before) && !/^\s/.test(after)
+  return {
+    value: `${before}${needsSpacer ? " " : ""}${after}`,
+    cursor: before.length + (needsSpacer ? 1 : 0),
+  }
+}
+
+export function skillChipDeleteTarget(
+  key: string,
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
+  selectedSkillCount: number,
+): SkillChipDeleteTarget {
+  if (selectedSkillCount === 0 || selectionStart !== 0 || selectionEnd !== 0) return null
+  if (key === "Backspace") return "last"
+  if (key === "Delete" && value.length === 0) return "first"
+  return null
+}
+
 interface ChatInputProps {
   onSend: (text: string, images: MessageImage[], options: ChatSendOptions) => void
   onStop: () => void

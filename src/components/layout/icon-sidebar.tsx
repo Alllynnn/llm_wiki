@@ -1,5 +1,5 @@
 import {
-  FileText, FolderOpen, Search, Network, ClipboardCheck, Settings, ArrowLeftRight, ClipboardList, Globe, MessageSquare,
+  FileText, FolderOpen, Search, Network, ClipboardCheck, Settings, ArrowLeftRight, ClipboardList, Globe, MessageSquare, Sparkles,
 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useWikiStore } from "@/stores/wiki-store"
@@ -97,6 +97,19 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
               )}
             </TooltipTrigger>
             <TooltipContent side="right">{t("research.title")}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              onClick={() => setActiveView("skills")}
+              className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
+                activeView === "skills"
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
+              }`}
+            >
+              <Sparkles className="h-5 w-5" />
+            </TooltipTrigger>
+            <TooltipContent side="right">{t("nav.skills")}</TooltipContent>
           </Tooltip>
         </div>
         {/* Bottom: settings + switch project */}

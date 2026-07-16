@@ -220,7 +220,7 @@ describe("chat agent routing", () => {
     expect(String(result.messages[0].content)).toContain("## Wiki Overview")
     expect(String(result.messages[0].content)).toContain("This wiki covers transformer architecture")
     expect(String(result.messages[0].content)).toContain("## Wiki Index")
-    expect(String(result.messages[result.messages.length - 1]?.content)).toContain("[REMINDER: All output must be in English")
+    expect(String(result.messages[result.messages.length - 1]?.content)).toContain("[REMINDER: Write prose in English")
   })
 
   it("emits detailed agent steps for tool calls and results", async () => {
