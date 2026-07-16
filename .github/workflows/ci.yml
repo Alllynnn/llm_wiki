@@ -47,15 +47,21 @@ jobs:
           node-version: 20
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Check frontend build
-        run: npx vite build
+        run: npm run build
 
-      - name: Prepare MCP server resources
+      - name: Run frontend and automation tests
+        run: |
+          npm run test:mocks
+          npm run test:automation
+
+      - name: Prepare and test MCP server resources
         run: |
           npm --prefix mcp-server ci
           npm run mcp:build
+          npm run mcp:test
 
       - name: Check Rust build (server binary)
         working-directory: src-tauri

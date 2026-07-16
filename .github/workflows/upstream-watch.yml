@@ -1,0 +1,64 @@
+name: Upstream Watch
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted fork main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect upstream delta
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git remote add upstream https://github.com/nashsu/llm_wiki.git
+          git fetch --no-tags upstream main
+          base_sha="$(git rev-parse origin/main)"
+          upstream_sha="$(git rev-parse upstream/main)"
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            needed=false
+            commit_count=0
+          else
+            needed=true
+            commit_count="$(git rev-list --count origin/main..upstream/main)"
+          fi
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "commit_count=$commit_count" >> "$GITHUB_OUTPUT"
+
+      - name: Reconcile synchronization issue
+        uses: actions/github-script@v7
+        env:
+          NEEDED: ${{ steps.detect.outputs.needed }}
+          BASE_SHA: ${{ steps.detect.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.detect.outputs.upstream_sha }}
+          COMMIT_COUNT: ${{ steps.detect.outputs.commit_count }}
+        with:
+          script: |
+            const { run } = require('./.github/scripts/upstream-watch.cjs');
+            await run({
+              github,
+              context,
+              input: {
+                needed: process.env.NEEDED === 'true',
+                baseSha: process.env.BASE_SHA,
+                upstreamSha: process.env.UPSTREAM_SHA,
+                commitCount: Number(process.env.COMMIT_COUNT),
+                compareUrl: 'https://github.com/Alllynnn/llm_wiki/compare/main...nashsu:llm_wiki:main',
+              },
+            });

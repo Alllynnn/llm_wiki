@@ -445,7 +445,7 @@ Run:
 node --test .github/scripts/automation-gate.test.cjs
 ```
 
-Expected: 4 tests passed，0 failed。
+Expected: 5 tests passed，0 failed，其中包含新提交使旧审查失效的回归测试。
 
 ## Task 4：接入 GitHub Actions 和跨平台 CI
 
@@ -541,7 +541,7 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
   statuses: write
 
 jobs:
@@ -567,6 +567,7 @@ jobs:
 在 `package.json` 的 `scripts` 中加入：
 
 ```json
+"test:mocks": "vitest run --exclude='**/*.real-llm.test.ts' --exclude='**/mcp-server/**' --exclude='.agents/**' --exclude='.github/**'",
 "test:automation": "node --test .github/scripts/*.test.cjs"
 ```
 
@@ -614,7 +615,7 @@ npm --prefix mcp-server test
 npm run mcp:build
 ```
 
-Expected: 所有命令退出码为 0；`test:automation` 为 8 tests passed。
+Expected: 所有命令退出码为 0；`test:automation` 为 10 tests passed。
 
 - [ ] **Step 6：运行 Rust 验证**
 
