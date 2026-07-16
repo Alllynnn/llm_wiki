@@ -11,7 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/src/index.js",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "test": "npm run build && node --test dist/test/api-client.test.js dist/test/project-binding.test.js dist/test/version.test.js"
   },
   "engines": {
     "node": ">=20"
