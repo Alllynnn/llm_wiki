@@ -738,7 +738,7 @@ Expected: 7 个标签可通过 `gh label list --repo Alllynnn/llm_wiki` 查询�
 Run:
 
 ```powershell
-gh api --method PATCH repos/Alllynnn/llm_wiki -F allow_auto_merge=true
+gh api --method PATCH repos/Alllynnn/llm_wiki -F allow_auto_merge=true -F has_issues=true
 
 $bootstrapProtection = @'
 {
