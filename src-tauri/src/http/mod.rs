@@ -24,6 +24,8 @@ pub mod files;
 pub mod proxy;
 pub mod proxy_raw;
 pub mod agent;
+pub mod admin;
+pub mod access;
 
 use std::sync::Arc;
 
@@ -79,6 +81,7 @@ pub fn main_router(state: AppState) -> Router {
     Router::new()
         .merge(authed)
         .merge(authed_agent)                       // agent routes with their own auth layers
+        .merge(admin::admin_router().with_state(state.clone())) // bridge-secret-protected sync
         .fallback(embed::spa_fallback)
         // Cookie layer needs to be outermost so cookies are parsed before
         // the session middleware runs.
@@ -126,6 +129,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             users: Arc::new(users),
@@ -161,6 +165,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             users: Arc::new(users),
@@ -468,6 +473,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             config: std::sync::Arc::new(cfg),
@@ -565,6 +571,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             users: std::sync::Arc::new(users),
@@ -922,6 +929,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             users: std::sync::Arc::new(users),
@@ -1000,6 +1008,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             users: std::sync::Arc::new(users),
@@ -1302,6 +1311,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             users: std::sync::Arc::new(users),

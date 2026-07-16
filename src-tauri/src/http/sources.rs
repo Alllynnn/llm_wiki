@@ -15,7 +15,7 @@ use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::session_event_sink::SessionEventSink;
 use crate::http::AppState;
-use crate::storage::paths::resolve_project_path;
+use crate::http::access::resolve_authorized_project_root;
 
 pub fn sources_router() -> Router<AppState> {
     Router::new()
@@ -35,15 +35,11 @@ struct IngestRequest {
 
 async fn ingest(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     cookies: Cookies,
     Json(req): Json<IngestRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let project_root =
-        resolve_project_path(&state.config.projects_root, &req.project_path).map_err(|e| {
-            ApiError::bad_request("PATH_ESCAPE", e.to_string())
-                .with_details(serde_json::json!({ "requested": req.project_path }))
-        })?;
+    let project_root = resolve_authorized_project_root(&state, &user, &req.project_path)?;
 
     let session_id = cookies
         .get(&state.config.session_cookie_name)
@@ -97,14 +93,10 @@ struct ListQuery {
 
 async fn list(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project_root =
-        resolve_project_path(&state.config.projects_root, &q.project_path).map_err(|e| {
-            ApiError::bad_request("PATH_ESCAPE", e.to_string())
-                .with_details(serde_json::json!({ "requested": q.project_path }))
-        })?;
+    let project_root = resolve_authorized_project_root(&state, &user, &q.project_path)?;
 
     let raw_dir = project_root.join("raw");
     if !raw_dir.exists() {
@@ -160,14 +152,10 @@ struct QueueQuery {
 
 async fn queue(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<QueueQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project_root =
-        resolve_project_path(&state.config.projects_root, &q.project_path).map_err(|e| {
-            ApiError::bad_request("PATH_ESCAPE", e.to_string())
-                .with_details(serde_json::json!({ "requested": q.project_path }))
-        })?;
+    let project_root = resolve_authorized_project_root(&state, &user, &q.project_path)?;
 
     let project_root_str = project_root.to_string_lossy().to_string();
     let file_queue = crate::core::file_sync::get_file_change_queue(&project_root_str)
@@ -221,6 +209,7 @@ mod tests {
             data_root,
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         AppState {
             users: Arc::new(users),

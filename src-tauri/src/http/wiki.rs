@@ -8,10 +8,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
+use crate::http::access::resolve_authorized_project_root;
 use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::AppState;
-use crate::storage::paths::{resolve_under, resolve_project_path};
+use crate::storage::paths::resolve_under;
 
 pub fn wiki_router() -> Router<AppState> {
     Router::new()
@@ -27,14 +28,6 @@ fn etag_for(content: &[u8]) -> String {
 }
 
 // ── Path helpers ─────────────────────────────────────────────────────────────
-
-/// Resolve project root; the project directory must already exist.
-fn resolve_project_root(state: &AppState, project_path: &str) -> Result<std::path::PathBuf, ApiError> {
-    resolve_project_path(&state.config.projects_root, project_path).map_err(|e| {
-        ApiError::bad_request("PATH_ESCAPE", e.to_string())
-            .with_details(serde_json::json!({ "requested": project_path }))
-    })
-}
 
 /// Resolve page path when the file must already exist (for reads and ETag checks).
 fn resolve_existing_page(
@@ -118,10 +111,10 @@ struct PageQuery {
 
 async fn read_page(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<PageQuery>,
 ) -> Result<Response, ApiError> {
-    let project_root = resolve_project_root(&state, &q.project_path)?;
+    let project_root = resolve_authorized_project_root(&state, &user, &q.project_path)?;
     let path = resolve_existing_page(&project_root, &q.page_path)?;
 
     let bytes = tokio::fs::read(&path).await.map_err(|e| match e.kind() {
@@ -156,7 +149,7 @@ struct WritePageRequest {
 
 async fn write_page(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     headers: HeaderMap,
     Json(req): Json<WritePageRequest>,
 ) -> Result<Response, ApiError> {
@@ -172,7 +165,7 @@ async fn write_page(
             )
         })?;
 
-    let project_root = resolve_project_root(&state, &req.project_path)?;
+    let project_root = resolve_authorized_project_root(&state, &user, &req.project_path)?;
     // Use write-path resolution (file may not exist yet for new pages,
     // but existing pages need ETag check before write).
     let path = resolve_write_page(&project_root, &req.page_path)?;
@@ -237,10 +230,10 @@ struct SearchRequest {
 
 async fn search(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project_root = resolve_project_root(&state, &req.project_path)?;
+    let project_root = resolve_authorized_project_root(&state, &user, &req.project_path)?;
 
     // Call core::search::search_project with its full signature.
     // We do not pass embedding_config from the HTTP layer; keyword-only
@@ -269,11 +262,11 @@ struct GraphQuery {
 
 async fn graph(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<GraphQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Validate the project path (returns 400 PATH_ESCAPE on bad input).
-    let _project_root = resolve_project_root(&state, &q.project_path)?;
+    let _project_root = resolve_authorized_project_root(&state, &user, &q.project_path)?;
 
     // TODO(phase-5): when core exposes a graph-building function (e.g.
     // `core::graph::compute_graph`), wire it here and return the node/edge

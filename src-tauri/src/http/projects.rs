@@ -5,11 +5,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::permissions::Permissions;
 use crate::core::project::{self, project_id_from_canonical_path};
+use crate::http::access::resolve_authorized_project_root;
 use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::AppState;
-use crate::storage::paths::resolve_project_path;
 
 pub fn projects_router() -> Router<AppState> {
     Router::new()
@@ -38,8 +39,9 @@ struct ProjectResult {
 
 async fn list(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
 ) -> Result<Json<Vec<ProjectSummary>>, ApiError> {
+    let perms = Permissions::load(&state.config.data_root);
     let root = &state.config.projects_root;
     let mut out = Vec::new();
     if !root.exists() {
@@ -70,6 +72,10 @@ async fn list(
             .unwrap_or(&path)
             .to_string_lossy()
             .to_string();
+        // Per-user visibility: skip projects this user is not authorized for.
+        if !perms.can_access(&user.id, &[id.as_str(), name.as_str(), rel.as_str()]) {
+            continue;
+        }
         out.push(ProjectSummary { id, name, path: rel });
     }
     Ok(Json(out))
@@ -87,17 +93,12 @@ async fn open(
     AuthUser(user): AuthUser,
     Json(req): Json<OpenRequest>,
 ) -> Result<Json<ProjectResult>, ApiError> {
-    let root = &state.config.projects_root;
-    // `resolve_project_path` tolerates both relative and absolute paths
-    // (the latter must be under projects_root). The frontend's Recent
-    // Projects UI sends absolute paths.
-    let resolved = resolve_project_path(root, &req.path).map_err(|e| {
-        ApiError::bad_request("PATH_ESCAPE", e.to_string())
-            .with_details(serde_json::json!({ "requested": req.path }))
-    })?;
+    // Resolve + enforce per-user access before opening. The frontend's Recent
+    // Projects UI may send absolute paths (tolerated, must be under root).
+    let resolved = resolve_authorized_project_root(&state, &user, &req.path)?;
+    let id = project_id_from_canonical_path(&resolved);
 
     let wiki = project::open_project(resolved.to_string_lossy().to_string())?;
-    let id = project_id_from_canonical_path(&resolved);
     let _ = state.user_data.add_recently_opened(&user.id, &id);
 
     Ok(Json(ProjectResult {
