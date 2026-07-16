@@ -8,6 +8,7 @@ use axum::routing::get;
 use axum::Router;
 use serde::Deserialize;
 
+use crate::http::access::require_path_access;
 use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::AppState;
@@ -34,7 +35,7 @@ struct RawQuery {
 
 async fn raw(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<RawQuery>,
 ) -> Result<Response, ApiError> {
     let projects_root = &state.config.projects_root;
@@ -68,6 +69,8 @@ async fn raw(
             })?
         }
     };
+
+    require_path_access(&state, &user, &file_path)?;
 
     if !file_path.is_file() {
         return Err(ApiError::new(
@@ -105,7 +108,7 @@ async fn raw(
 
 async fn extracted_text(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<RawQuery>,
 ) -> Result<Response, ApiError> {
     let projects_root = &state.config.projects_root;
@@ -136,6 +139,8 @@ async fn extracted_text(
                 .with_details(serde_json::json!({ "requested": q.path })),
         })?,
     };
+
+    require_path_access(&state, &user, &file_path)?;
 
     if !file_path.is_file() {
         return Err(ApiError::new(

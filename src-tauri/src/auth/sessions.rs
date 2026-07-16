@@ -34,6 +34,11 @@ impl SessionId {
 struct SessionRecord {
     user_id: String,
     expires_at_unix: u64,
+    /// Display name for sessions minted for identities that do not exist in
+    /// `users.toml` (e.g. panel/bridge logins). `None` for password logins,
+    /// whose `User` is resolved from `users.toml` by `user_id`.
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -49,10 +54,21 @@ impl Sessions {
     }
 
     pub fn create(&self, user_id: &str) -> Result<SessionId, SessionError> {
+        self.create_named(user_id, None)
+    }
+
+    /// Create a session, optionally carrying a `display_name` for identities
+    /// that are not backed by `users.toml` (bridge/panel logins).
+    pub fn create_named(
+        &self,
+        user_id: &str,
+        display_name: Option<String>,
+    ) -> Result<SessionId, SessionError> {
         let sid = SessionId::new();
         let record = SessionRecord {
             user_id: user_id.to_string(),
             expires_at_unix: now_unix().saturating_add(self.ttl_secs),
+            display_name,
         };
         let bytes = bincode::serialize(&record)?;
         self.db.insert(sid.as_str().as_bytes(), bytes)?;
@@ -61,6 +77,11 @@ impl Sessions {
     }
 
     pub fn lookup(&self, id: &str) -> Option<String> {
+        self.lookup_full(id).map(|(uid, _)| uid)
+    }
+
+    /// Like `lookup`, but also returns the session's `display_name` (if any).
+    pub fn lookup_full(&self, id: &str) -> Option<(String, Option<String>)> {
         let bytes = self.db.get(id.as_bytes()).ok().flatten()?;
         let record: SessionRecord = bincode::deserialize(&bytes).ok()?;
         if record.expires_at_unix <= now_unix() {
@@ -69,7 +90,7 @@ impl Sessions {
             let _ = self.db.remove(id.as_bytes());
             return None;
         }
-        Some(record.user_id)
+        Some((record.user_id, record.display_name))
     }
 
     pub fn delete(&self, id: &str) -> Result<(), SessionError> {

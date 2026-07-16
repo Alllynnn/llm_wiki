@@ -40,7 +40,7 @@ use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::session_event_sink::SessionEventSink;
 use crate::http::AppState;
-use crate::storage::paths::resolve_project_path;
+use crate::http::access::resolve_authorized_project_root;
 
 pub fn chat_router() -> Router<AppState> {
     Router::new()
@@ -61,11 +61,7 @@ async fn list_conversations(
     AuthUser(user): AuthUser,
     Query(q): Query<ListConvQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project_root =
-        resolve_project_path(&state.config.projects_root, &q.project_path).map_err(|e| {
-            ApiError::bad_request("PATH_ESCAPE", e.to_string())
-                .with_details(serde_json::json!({ "requested": q.project_path }))
-        })?;
+    let project_root = resolve_authorized_project_root(&state, &user, &q.project_path)?;
     let project_id = crate::core::project::project_id_from_canonical_path(&project_root);
     let metas = state
         .user_data
@@ -91,11 +87,7 @@ async fn load_conversation(
     AuthUser(user): AuthUser,
     Query(q): Query<LoadConvQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project_root =
-        resolve_project_path(&state.config.projects_root, &q.project_path).map_err(|e| {
-            ApiError::bad_request("PATH_ESCAPE", e.to_string())
-                .with_details(serde_json::json!({ "requested": q.project_path }))
-        })?;
+    let project_root = resolve_authorized_project_root(&state, &user, &q.project_path)?;
     let project_id = crate::core::project::project_id_from_canonical_path(&project_root);
     let conv = state
         .user_data
@@ -119,11 +111,7 @@ async fn send(
     cookies: Cookies,
     Json(req): Json<SendRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let project_root =
-        resolve_project_path(&state.config.projects_root, &req.project_path).map_err(|e| {
-            ApiError::bad_request("PATH_ESCAPE", e.to_string())
-                .with_details(serde_json::json!({ "requested": req.project_path }))
-        })?;
+    let project_root = resolve_authorized_project_root(&state, &user, &req.project_path)?;
     let project_id = crate::core::project::project_id_from_canonical_path(&project_root);
 
     // Load user config and extract LLM provider settings.
@@ -357,6 +345,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             users: Arc::new(users),

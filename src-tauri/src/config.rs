@@ -19,6 +19,9 @@ pub struct ServerConfig {
     pub data_root: PathBuf,
     pub legacy_19828_enabled: bool,
     pub session_cookie_name: String,
+    /// Shared secret for the admin/bridge endpoints (per-user bridge login and
+    /// permissions sync). When unset, those endpoints are disabled.
+    pub bridge_secret: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +59,10 @@ impl ServerConfig {
         let session_cookie_name = std::env::var("LLM_WIKI_SESSION_COOKIE_NAME")
             .unwrap_or_else(|_| "llm_wiki_session".to_string());
 
+        let bridge_secret = std::env::var("LLM_WIKI_BRIDGE_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty());
+
         Ok(ServerConfig {
             bind,
             port,
@@ -63,6 +70,7 @@ impl ServerConfig {
             data_root,
             legacy_19828_enabled,
             session_cookie_name,
+            bridge_secret,
         })
     }
 }

@@ -270,6 +270,7 @@ mod tests {
             data_root: dir.path().to_path_buf(),
             legacy_19828_enabled: true,
             session_cookie_name: "test_session".into(),
+            bridge_secret: None,
         };
         let state = AppState {
             users: Arc::new(users),

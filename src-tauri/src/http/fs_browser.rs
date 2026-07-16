@@ -6,6 +6,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
+use crate::http::access::require_path_access;
 use crate::http::auth::AuthUser;
 use crate::http::error::ApiError;
 use crate::http::AppState;
@@ -29,7 +30,7 @@ struct ListQuery {
 
 async fn list(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let target = if q.path.is_empty() {
@@ -48,6 +49,7 @@ async fn list(
                 .with_details(serde_json::json!({ "requested": q.path }))
         })?
     };
+    require_path_access(&state, &user, &target)?;
 
     if !target.exists() {
         return Err(ApiError::new(
@@ -94,10 +96,11 @@ struct MkdirRequest {
 
 async fn mkdir(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Json(req): Json<MkdirRequest>,
 ) -> Result<StatusCode, ApiError> {
     let target = resolve_writable_path(&state, &req.path)?;
+    require_path_access(&state, &user, &target)?;
     std::fs::create_dir_all(&target).map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(StatusCode::CREATED)
 }
@@ -112,10 +115,11 @@ struct WriteRequest {
 
 async fn write(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Json(req): Json<WriteRequest>,
 ) -> Result<StatusCode, ApiError> {
     let target = resolve_writable_path(&state, &req.path)?;
+    require_path_access(&state, &user, &target)?;
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ApiError::internal(e.to_string()))?;
     }
@@ -132,11 +136,12 @@ struct WriteBase64Request {
 
 async fn write_base64(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Json(req): Json<WriteBase64Request>,
 ) -> Result<StatusCode, ApiError> {
     use base64::Engine;
     let target = resolve_writable_path(&state, &req.path)?;
+    require_path_access(&state, &user, &target)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(req.base64.as_bytes())
         .map_err(|e| ApiError::bad_request("BAD_BASE64", e.to_string()))?;
@@ -150,13 +155,14 @@ async fn write_base64(
 
 async fn exists(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if q.path.is_empty() {
         return Err(ApiError::bad_request("BAD_REQUEST", "path must not be empty"));
     }
     let target = resolve_writable_path(&state, &q.path)?;
+    require_path_access(&state, &user, &target)?;
     Ok(Json(serde_json::json!({ "exists": target.exists() })))
 }
 
@@ -167,10 +173,11 @@ struct DeleteQuery {
 
 async fn delete_file(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<DeleteQuery>,
 ) -> Result<StatusCode, ApiError> {
     let target = resolve_writable_path(&state, &q.path)?;
+    require_path_access(&state, &user, &target)?;
     if !target.exists() {
         return Ok(StatusCode::NO_CONTENT);
     }
