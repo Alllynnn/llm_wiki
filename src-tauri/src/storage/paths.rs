@@ -108,29 +108,51 @@ mod tests {
     fn resolves_a_valid_relative_path() {
         let dir = setup();
         let resolved = resolve_under(dir.path(), "sub/nested/file.txt").unwrap();
-        let expected = dir.path().join("sub/nested/file.txt").canonicalize().unwrap();
+        let expected = dir
+            .path()
+            .join("sub/nested/file.txt")
+            .canonicalize()
+            .unwrap();
         assert_eq!(resolved, expected);
     }
 
     #[test]
     fn rejects_empty_path() {
         let dir = setup();
-        assert!(matches!(resolve_under(dir.path(), ""), Err(PathError::Empty)));
-        assert!(matches!(resolve_under(dir.path(), "   "), Err(PathError::Empty)));
+        assert!(matches!(
+            resolve_under(dir.path(), ""),
+            Err(PathError::Empty)
+        ));
+        assert!(matches!(
+            resolve_under(dir.path(), "   "),
+            Err(PathError::Empty)
+        ));
     }
 
     #[test]
     fn rejects_absolute_unix_path() {
         let dir = setup();
-        assert!(matches!(resolve_under(dir.path(), "/etc/passwd"), Err(PathError::Absolute)));
+        assert!(matches!(
+            resolve_under(dir.path(), "/etc/passwd"),
+            Err(PathError::Absolute)
+        ));
     }
 
     #[test]
     fn rejects_parent_traversal_segment() {
         let dir = setup();
-        assert!(matches!(resolve_under(dir.path(), ".."), Err(PathError::Traversal)));
-        assert!(matches!(resolve_under(dir.path(), "sub/../.."), Err(PathError::Traversal)));
-        assert!(matches!(resolve_under(dir.path(), "sub/../../etc"), Err(PathError::Traversal)));
+        assert!(matches!(
+            resolve_under(dir.path(), ".."),
+            Err(PathError::Traversal)
+        ));
+        assert!(matches!(
+            resolve_under(dir.path(), "sub/../.."),
+            Err(PathError::Traversal)
+        ));
+        assert!(matches!(
+            resolve_under(dir.path(), "sub/../../etc"),
+            Err(PathError::Traversal)
+        ));
     }
 
     #[test]
@@ -158,7 +180,11 @@ mod tests {
         let dir = setup();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("secret.txt"), b"hush").unwrap();
-        symlink(outside.path().join("secret.txt"), dir.path().join("link_out")).unwrap();
+        symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("link_out"),
+        )
+        .unwrap();
         assert!(matches!(
             resolve_under(dir.path(), "link_out"),
             Err(PathError::Escape)

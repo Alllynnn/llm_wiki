@@ -1,11 +1,11 @@
 mod api_server;
 pub mod auth;
-pub mod config;
-pub mod core;
-pub mod http;
 mod clip_server;
 mod commands;
+pub mod config;
+pub mod core;
 mod cors;
+pub mod http;
 mod panic_guard;
 mod proxy;
 mod server_bind;

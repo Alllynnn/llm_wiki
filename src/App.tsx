@@ -18,6 +18,7 @@ import { LoginView } from "@/components/auth/login-view"
 import type { AuthUser } from "@/components/auth/login-view"
 import { apiCall, ApiError } from "@/lib/api"
 import { setAuthUser } from "@/lib/auth"
+import { clearConfigCache } from "@/lib/user-config"
 import { resolveWikiPathFromBrowserPath } from "@/lib/wiki-page-resolver"
 
 function applyDocumentZoom(level: number) {
@@ -140,100 +141,7 @@ function App() {
         }
         // ─────────────────────────────────────────────────────────────────────
 
-        const savedZoom = await loadZoomLevel()
-        applyDocumentZoom(savedZoom)
-        useZoomStore.getState().setLevel(savedZoom)
-
-        const savedConfig = await loadLlmConfig()
-        if (savedConfig) {
-          useWikiStore.getState().setLlmConfig(savedConfig)
-        }
-        const savedProviderConfigs = await loadProviderConfigs()
-        if (savedProviderConfigs) {
-          useWikiStore.getState().setProviderConfigs(savedProviderConfigs)
-        }
-        const savedActivePreset = await loadActivePresetId()
-        if (savedActivePreset) {
-          useWikiStore.getState().setActivePresetId(savedActivePreset)
-          // Re-resolve the active preset's LlmConfig from (preset defaults
-          // + saved overrides). Without this, preset default updates
-          // (e.g. a corrected Anthropic model ID shipped in a release)
-          // never reach users who are relying on defaults — their stored
-          // `llmConfig` snapshot from a previous launch would keep the
-          // old value. Overrides still win, so an explicit user choice
-          // is preserved.
-          const { LLM_PRESETS } = await import("@/components/settings/llm-presets")
-          const { resolveConfig } = await import("@/components/settings/preset-resolver")
-          const preset = LLM_PRESETS.find((p) => p.id === savedActivePreset)
-          if (preset) {
-            const currentFallback = useWikiStore.getState().llmConfig
-            const override = (savedProviderConfigs ?? {})[savedActivePreset]
-            const resolved = resolveConfig(preset, override, currentFallback)
-            useWikiStore.getState().setLlmConfig(resolved)
-            const { saveLlmConfig } = await import("@/lib/project-store")
-            await saveLlmConfig(resolved)
-          }
-        }
-        const savedSearchConfig = await loadSearchApiConfig()
-        if (savedSearchConfig) {
-          useWikiStore.getState().setSearchApiConfig(savedSearchConfig)
-        }
-        const savedEmbeddingConfig = await loadEmbeddingConfig()
-        if (savedEmbeddingConfig) {
-          useWikiStore.getState().setEmbeddingConfig(savedEmbeddingConfig)
-        }
-        const savedMultimodalConfig = await loadMultimodalConfig()
-        if (savedMultimodalConfig) {
-          useWikiStore.getState().setMultimodalConfig(savedMultimodalConfig)
-        }
-
-        const savedMineruConfig = await loadMineruConfig()
-        if (savedMineruConfig) {
-          useWikiStore.getState().setMineruConfig(savedMineruConfig)
-        }
-        const savedProxy = await loadProxyConfig()
-        if (savedProxy) {
-          useWikiStore.getState().setProxyConfig(savedProxy)
-        }
-        // Local HTTP API server config — global (single token + enable
-        // flag for the whole install, not per-project). The Rust side
-        // reads `apiConfig.{enabled,token,mcpEnabled}` from `app-state.json`
-        // directly; this only hydrates the Zustand store so the
-        // Settings UI reflects the persisted values.
-        const savedApi = await loadApiConfig()
-        if (savedApi) {
-          useWikiStore.getState().setApiConfig({
-            enabled: typeof savedApi.enabled === "boolean" ? savedApi.enabled : true,
-            allowUnauthenticated:
-              typeof savedApi.allowUnauthenticated === "boolean"
-                ? savedApi.allowUnauthenticated
-                : false,
-            allowLanAccess:
-              typeof savedApi.allowLanAccess === "boolean"
-                ? savedApi.allowLanAccess
-                : false,
-            mcpEnabled:
-              typeof savedApi.mcpEnabled === "boolean"
-                ? savedApi.mcpEnabled
-                : false,
-            token: typeof savedApi.token === "string" ? savedApi.token : "",
-          })
-        }
-        const savedGeneral = await loadGeneralConfig()
-        useWikiStore.getState().setGeneralConfig(savedGeneral)
-        // set_close_behavior was a Tauri-only IPC call; no HTTP equivalent.
-        // In the browser/LAN context the close behavior is a no-op.
-        const savedLang = await loadLanguage()
-        await i18n.changeLanguage(savedLang ?? "zh")
-        const lastProject = await getLastProject()
-        if (lastProject) {
-          try {
-            const proj = await openProject(lastProject.path)
-            await handleProjectOpened(proj)
-          } catch {
-            // Last project no longer valid
-          }
-        }
+        await hydrateAuthenticatedState()
       } catch {
         // ignore init errors
       } finally {
@@ -242,6 +150,103 @@ function App() {
     }
     init()
   }, [])
+
+  async function hydrateAuthenticatedState() {
+    const savedZoom = await loadZoomLevel()
+    applyDocumentZoom(savedZoom)
+    useZoomStore.getState().setLevel(savedZoom)
+
+    const savedConfig = await loadLlmConfig()
+    if (savedConfig) {
+      useWikiStore.getState().setLlmConfig(savedConfig)
+    }
+    const savedProviderConfigs = await loadProviderConfigs()
+    if (savedProviderConfigs) {
+      useWikiStore.getState().setProviderConfigs(savedProviderConfigs)
+    }
+    const savedActivePreset = await loadActivePresetId()
+    if (savedActivePreset) {
+      useWikiStore.getState().setActivePresetId(savedActivePreset)
+      // Re-resolve the active preset's LlmConfig from (preset defaults
+      // + saved overrides). Without this, preset default updates
+      // (e.g. a corrected Anthropic model ID shipped in a release)
+      // never reach users who are relying on defaults — their stored
+      // `llmConfig` snapshot from a previous launch would keep the
+      // old value. Overrides still win, so an explicit user choice
+      // is preserved.
+      const { LLM_PRESETS } = await import("@/components/settings/llm-presets")
+      const { resolveConfig } = await import("@/components/settings/preset-resolver")
+      const preset = LLM_PRESETS.find((p) => p.id === savedActivePreset)
+      if (preset) {
+        const currentFallback = useWikiStore.getState().llmConfig
+        const override = (savedProviderConfigs ?? {})[savedActivePreset]
+        const resolved = resolveConfig(preset, override, currentFallback)
+        useWikiStore.getState().setLlmConfig(resolved)
+        const { saveLlmConfig } = await import("@/lib/project-store")
+        await saveLlmConfig(resolved)
+      }
+    }
+    const savedSearchConfig = await loadSearchApiConfig()
+    if (savedSearchConfig) {
+      useWikiStore.getState().setSearchApiConfig(savedSearchConfig)
+    }
+    const savedEmbeddingConfig = await loadEmbeddingConfig()
+    if (savedEmbeddingConfig) {
+      useWikiStore.getState().setEmbeddingConfig(savedEmbeddingConfig)
+    }
+    const savedMultimodalConfig = await loadMultimodalConfig()
+    if (savedMultimodalConfig) {
+      useWikiStore.getState().setMultimodalConfig(savedMultimodalConfig)
+    }
+
+    const savedMineruConfig = await loadMineruConfig()
+    if (savedMineruConfig) {
+      useWikiStore.getState().setMineruConfig(savedMineruConfig)
+    }
+    const savedProxy = await loadProxyConfig()
+    if (savedProxy) {
+      useWikiStore.getState().setProxyConfig(savedProxy)
+    }
+    // Local HTTP API server config — global (single token + enable
+    // flag for the whole install, not per-project). The Rust side
+    // reads `apiConfig.{enabled,token,mcpEnabled}` from `app-state.json`
+    // directly; this only hydrates the Zustand store so the
+    // Settings UI reflects the persisted values.
+    const savedApi = await loadApiConfig()
+    if (savedApi) {
+      useWikiStore.getState().setApiConfig({
+        enabled: typeof savedApi.enabled === "boolean" ? savedApi.enabled : true,
+        allowUnauthenticated:
+          typeof savedApi.allowUnauthenticated === "boolean"
+            ? savedApi.allowUnauthenticated
+            : false,
+        allowLanAccess:
+          typeof savedApi.allowLanAccess === "boolean"
+            ? savedApi.allowLanAccess
+            : false,
+        mcpEnabled:
+          typeof savedApi.mcpEnabled === "boolean"
+            ? savedApi.mcpEnabled
+            : false,
+        token: typeof savedApi.token === "string" ? savedApi.token : "",
+      })
+    }
+    const savedGeneral = await loadGeneralConfig()
+    useWikiStore.getState().setGeneralConfig(savedGeneral)
+    // set_close_behavior was a Tauri-only IPC call; no HTTP equivalent.
+    // In the browser/LAN context the close behavior is a no-op.
+    const savedLang = await loadLanguage()
+    await i18n.changeLanguage(savedLang ?? "zh")
+    const lastProject = await getLastProject()
+    if (lastProject) {
+      try {
+        const proj = await openProject(lastProject.path)
+        await handleProjectOpened(proj)
+      } catch {
+        // Last project no longer valid
+      }
+    }
+  }
 
   async function handleProjectOpened(proj: WikiProject) {
     // Flush the OUTGOING project's review/lint/chat state to disk and suspend
@@ -399,9 +404,18 @@ function App() {
     setSelectedFile(null)
   }
 
-  function handleLogin(user: AuthUser) {
+  async function handleLogin(user: AuthUser) {
+    setLoading(true)
+    clearConfigCache()
     setAuthUser_(user)
     setAuthUser(user)
+    try {
+      await hydrateAuthenticatedState()
+    } catch (err) {
+      console.error("Failed to hydrate after login:", err)
+    } finally {
+      setLoading(false)
+    }
   }
 
   if (loading || authUser === null) {

@@ -1,0 +1,6 @@
+interface:
+  display_name: "视觉难题 FAQ"
+  short_description: "基于 LLM Wiki 证据回答视觉难题规则问题"
+  default_prompt: "Use $visual-hardcase-faq to answer a visual hardcase FAQ question with LLM Wiki citations."
+policy:
+  allow_implicit_invocation: true

@@ -45,7 +45,10 @@ pub struct Sessions {
 impl Sessions {
     pub fn open(path: &Path) -> Result<Self, SessionError> {
         let db = sled::open(path)?;
-        Ok(Sessions { db, ttl_secs: DEFAULT_SESSION_TTL_SECS })
+        Ok(Sessions {
+            db,
+            ttl_secs: DEFAULT_SESSION_TTL_SECS,
+        })
     }
 
     pub fn create(&self, user_id: &str) -> Result<SessionId, SessionError> {
@@ -106,7 +109,10 @@ impl Sessions {
 }
 
 fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]

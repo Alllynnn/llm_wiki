@@ -251,12 +251,27 @@ export interface FileBase64 {
 
 /**
  * Read any file as base64 + guessed mime type.
- * TODO(stub): no HTTP equivalent for arbitrary base64 reads. The vision-caption
- * pipeline that used this will be refactored to go through /proxy/llm in Task 5.9.
  */
-export async function readFileAsBase64(_path: string): Promise<FileBase64> {
-  console.warn("[fs] readFileAsBase64: no HTTP equivalent; returning empty base64")
-  return { base64: "", mimeType: "application/octet-stream" }
+export async function readFileAsBase64(path: string): Promise<FileBase64> {
+  assertAbsoluteFsPath("readFileAsBase64", path)
+  const qs = new URLSearchParams({ path })
+  const resp = await apiFetch("GET", `/api/v1/files/raw?${qs.toString()}`)
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "")
+    throw new Error(`readFileAsBase64 ${resp.status}: ${body || resp.statusText}`)
+  }
+
+  const bytes = new Uint8Array(await resp.arrayBuffer())
+  let binary = ""
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.slice(i, i + chunkSize))
+  }
+
+  return {
+    base64: btoa(binary),
+    mimeType: resp.headers.get("content-type")?.split(";")[0] || "application/octet-stream",
+  }
 }
 
 // ── Projects ──────────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -21,7 +21,9 @@ use crate::http::session_event_sink::SessionEventSink;
 use crate::http::AppState;
 
 pub fn proxy_router() -> Router<AppState> {
-    Router::new().route("/api/v1/proxy/llm", post(proxy))
+    Router::new()
+        .route("/api/v1/proxy/llm", post(proxy))
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,7 +81,10 @@ async fn proxy(
             .await;
         match result {
             Ok(()) => {
-                sink.emit("proxy:done", serde_json::json!({ "request_id": request_id_owned }));
+                sink.emit(
+                    "proxy:done",
+                    serde_json::json!({ "request_id": request_id_owned }),
+                );
             }
             Err(e) => {
                 sink.emit(

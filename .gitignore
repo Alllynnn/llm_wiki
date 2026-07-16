@@ -56,3 +56,11 @@ pnpm-debug.log*
 # Brainstorm assets (not tracked in source control)
 .superpowers/
 .claude/
+
+# Local Codex automation state and secrets
+.tmp/
+tmp/
+".tmp/
+.codex/**/__pycache__/
+.codex/**/config/*.txt
+*.py[cod]

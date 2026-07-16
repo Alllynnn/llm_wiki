@@ -31,12 +31,9 @@ pub enum ConfigError {
 
 impl ServerConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let bind = std::env::var("LLM_WIKI_BIND")
-            .unwrap_or_else(|_| "127.0.0.1".to_string());
+        let bind = std::env::var("LLM_WIKI_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
         let port = match std::env::var("LLM_WIKI_PORT") {
-            Ok(s) => s
-                .parse::<u16>()
-                .map_err(|_| ConfigError::InvalidPort(s))?,
+            Ok(s) => s.parse::<u16>().map_err(|_| ConfigError::InvalidPort(s))?,
             Err(_) => 8080,
         };
 
@@ -146,8 +143,14 @@ mod tests {
     #[test]
     fn bool_accepts_aliases() {
         for (v, expected) in [
-            ("true", true), ("1", true), ("yes", true), ("TRUE", true),
-            ("false", false), ("0", false), ("no", false), ("FALSE", false),
+            ("true", true),
+            ("1", true),
+            ("yes", true),
+            ("TRUE", true),
+            ("false", false),
+            ("0", false),
+            ("no", false),
+            ("FALSE", false),
         ] {
             let cfg = with_clean_env(|| {
                 std::env::set_var("LLM_WIKI_LEGACY_19828_ENABLED", v);

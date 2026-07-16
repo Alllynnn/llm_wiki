@@ -9,6 +9,8 @@ export type LlmProvider = LlmConfig["provider"]
  *     may or may not require auth (LM Studio, llama.cpp, vLLM
  *     defaults are all unauthenticated; users who deploy behind a
  *     proxy can still set apiKey to add Bearer auth)
+ *   - `claude-code` and `codex-cli` run through local CLI credentials
+ *     and do not use the API key field in LLM Wiki settings
  *
  * Hosted providers (openai, anthropic, google, azure, minimax) require a
  * key from the user.
@@ -16,6 +18,8 @@ export type LlmProvider = LlmConfig["provider"]
 export const PROVIDERS_WITHOUT_KEY: ReadonlySet<LlmProvider> = new Set<LlmProvider>([
   "ollama",
   "custom",
+  "claude-code",
+  "codex-cli",
 ])
 
 /**

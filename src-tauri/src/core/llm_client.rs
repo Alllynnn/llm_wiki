@@ -154,9 +154,8 @@ impl LlmClient {
                 };
                 let event_bytes: Vec<u8> = buf.drain(..idx + 2).collect();
                 // remove the double newline
-                let event_str =
-                    std::str::from_utf8(&event_bytes[..event_bytes.len() - 2])
-                        .map_err(|e| LlmError::StreamParse(e.to_string()))?;
+                let event_str = std::str::from_utf8(&event_bytes[..event_bytes.len() - 2])
+                    .map_err(|e| LlmError::StreamParse(e.to_string()))?;
 
                 for line in event_str.lines() {
                     let Some(data) = line.strip_prefix("data:") else {

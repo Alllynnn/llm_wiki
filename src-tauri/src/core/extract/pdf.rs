@@ -142,7 +142,10 @@ pub fn extract_markdown(
 /// Iterate every PDF page, extract every embedded raster image, and
 /// re-encode each to PNG. Vector content (paths, glyph outlines) is NOT
 /// extracted here.
-pub fn extract_images(path: &str, options: &ExtractOptions) -> Result<Vec<ExtractedImage>, ExtractError> {
+pub fn extract_images(
+    path: &str,
+    options: &ExtractOptions,
+) -> Result<Vec<ExtractedImage>, ExtractError> {
     use pdfium_render::prelude::*;
 
     let _guard = crate::core::files::lock_pdfium();

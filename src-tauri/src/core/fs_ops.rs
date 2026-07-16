@@ -36,7 +36,11 @@ pub enum FsOpsError {
 
 const OFFICE_EXTS: &[&str] = &["doc", "docx", "pptx", "xls", "xlsx", "odt", "ods", "odp"];
 
-pub(crate) fn build_tree(dir: &Path, depth: usize, max_depth: usize) -> Result<Vec<FileNode>, String> {
+pub(crate) fn build_tree(
+    dir: &Path,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Vec<FileNode>, String> {
     if depth >= max_depth {
         return Ok(vec![]);
     }

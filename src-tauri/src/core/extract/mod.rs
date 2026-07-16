@@ -34,8 +34,7 @@ impl ExtractError {
     /// Convert a `String` error from `panic_guard::run_guarded` into a typed
     /// variant. Mirrors the heuristic used in `core::vectorstore`.
     pub fn from_guarded(s: String) -> Self {
-        if s.starts_with("panic:") || s.contains("panicked") || s.starts_with("Internal error in")
-        {
+        if s.starts_with("panic:") || s.contains("panicked") || s.starts_with("Internal error in") {
             ExtractError::Panic(s)
         } else {
             ExtractError::Internal(s)

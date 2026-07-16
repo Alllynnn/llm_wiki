@@ -1,0 +1,6 @@
+interface:
+  display_name: "新人训练工作流"
+  short_description: "发送新人学习资料、作业入口并记录人工审核交接"
+  default_prompt: "Use $visual-hardcase-newcomer-onboarding to guide newcomer onboarding and hand off completed visual hardcase assignments."
+policy:
+  allow_implicit_invocation: true

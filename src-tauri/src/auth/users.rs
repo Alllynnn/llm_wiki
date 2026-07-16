@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{
+    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+};
 use argon2::Argon2;
 use serde::Deserialize;
 
@@ -59,8 +61,8 @@ impl Users {
                 UsersError::Io(e)
             }
         })?;
-        let parsed: UsersFile = toml::from_str(&raw)
-            .map_err(|e| UsersError::Malformed(e.to_string()))?;
+        let parsed: UsersFile =
+            toml::from_str(&raw).map_err(|e| UsersError::Malformed(e.to_string()))?;
 
         let mut by_id = HashMap::new();
         let mut display_names = HashMap::new();
@@ -77,7 +79,11 @@ impl Users {
         let sentinel_hash = hash_password("__timing_oracle_sentinel__")
             .expect("argon2 hash of a constant input cannot fail");
 
-        Ok(Users { by_id, display_names, sentinel_hash })
+        Ok(Users {
+            by_id,
+            display_names,
+            sentinel_hash,
+        })
     }
 
     pub fn verify_password(&self, username: &str, plaintext: &str) -> Result<User, AuthError> {
@@ -88,15 +94,14 @@ impl Users {
                 // Unknown user: run a single argon2 verify against the
                 // pre-computed sentinel so this branch costs the same as a
                 // real verify. No second KDF, no timing oracle.
-                let _ = PasswordHash::new(&self.sentinel_hash).and_then(|h| {
-                    Argon2::default().verify_password(plaintext.as_bytes(), &h)
-                });
+                let _ = PasswordHash::new(&self.sentinel_hash)
+                    .and_then(|h| Argon2::default().verify_password(plaintext.as_bytes(), &h));
                 return Err(AuthError::InvalidCredentials);
             }
         };
 
-        let parsed = PasswordHash::new(&record.password_hash)
-            .map_err(|e| AuthError::Hash(e.to_string()))?;
+        let parsed =
+            PasswordHash::new(&record.password_hash).map_err(|e| AuthError::Hash(e.to_string()))?;
         Argon2::default()
             .verify_password(plaintext.as_bytes(), &parsed)
             .map_err(|_| AuthError::InvalidCredentials)?;
@@ -122,7 +127,10 @@ impl Users {
             .get(&lookup_id)
             .cloned()
             .unwrap_or_else(|| lookup_id.clone());
-        Some(User { id: lookup_id, username })
+        Some(User {
+            id: lookup_id,
+            username,
+        })
     }
 }
 

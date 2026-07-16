@@ -15,7 +15,7 @@ export interface AuthUser {
 
 export interface LoginViewProps {
   /** Called when login succeeds with the authenticated user object. */
-  onLogin: (user: AuthUser) => void
+  onLogin: (user: AuthUser) => void | Promise<void>
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ export function LoginView({ onLogin }: LoginViewProps) {
     try {
       await apiCall("POST", "/api/v1/auth/login", { username, password })
       const user = await apiCall<AuthUser>("GET", "/api/v1/auth/whoami")
-      onLogin(user)
+      await onLogin(user)
     } catch (err) {
       if (err instanceof ApiError && err.code === "INVALID_CREDENTIALS") {
         setError(t("auth.invalidCredentials"))

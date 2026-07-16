@@ -468,7 +468,7 @@ pub fn enqueue_rescan_changes(
     project_id: &str,
     source_watch_config: &crate::core::file_sync::SourceWatchConfig,
 ) -> Result<(), String> {
-    use crate::core::file_sync::{SourceWatchRules, relative_watch_path};
+    use crate::core::file_sync::{relative_watch_path, SourceWatchRules};
     use walkdir::WalkDir;
 
     let rules = SourceWatchRules::new(source_watch_config);
@@ -501,7 +501,7 @@ pub fn enqueue_rescan_changes_for_prefixes(
     prefixes: &[&str],
     source_watch_config: &crate::core::file_sync::SourceWatchConfig,
 ) -> Result<(), String> {
-    use crate::core::file_sync::{SourceWatchRules, relative_watch_path};
+    use crate::core::file_sync::{relative_watch_path, SourceWatchRules};
     use walkdir::WalkDir;
 
     let rules = SourceWatchRules::new(source_watch_config);

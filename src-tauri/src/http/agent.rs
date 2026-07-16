@@ -11,16 +11,17 @@
 //!   GET  /api/v1/agent/file?project_path=&path= — raw file bytes
 
 use axum::body::Body;
-use axum::extract::{Query, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{Path as AxumPath, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 use crate::http::error::ApiError;
 use crate::http::AppState;
-use crate::storage::paths::{resolve_under, resolve_project_path, PathError};
+use crate::storage::paths::{resolve_project_path, resolve_under, PathError};
 
 pub fn agent_router() -> Router<AppState> {
     Router::new()
@@ -29,22 +30,33 @@ pub fn agent_router() -> Router<AppState> {
         .route("/api/v1/agent/file", get(file))
 }
 
+pub fn token_project_router() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/projects", get(token_projects))
+        .route(
+            "/api/v1/projects/{project_id}/search",
+            post(token_project_search),
+        )
+}
+
 // ── GET /api/v1/agent/projects ───────────────────────────────────────────────
 
-async fn projects(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+async fn projects(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    Ok(Json(
+        serde_json::json!({ "projects": list_projects(&state)? }),
+    ))
+}
+
+fn list_projects(state: &AppState) -> Result<Vec<serde_json::Value>, ApiError> {
     let root = &state.config.projects_root;
     if !root.exists() {
-        return Ok(Json(serde_json::json!({ "projects": [] })));
+        return Ok(Vec::new());
     }
     let canon_root = root
         .canonicalize()
         .map_err(|e| ApiError::internal(e.to_string()))?;
     let mut out = Vec::new();
-    for entry in
-        std::fs::read_dir(&canon_root).map_err(|e| ApiError::internal(e.to_string()))?
-    {
+    for entry in std::fs::read_dir(&canon_root).map_err(|e| ApiError::internal(e.to_string()))? {
         let entry = entry.map_err(|e| ApiError::internal(e.to_string()))?;
         let path = entry.path();
         if !path.is_dir() {
@@ -66,7 +78,7 @@ async fn projects(
             .to_string();
         out.push(serde_json::json!({ "id": id, "name": name, "path": rel }));
     }
-    Ok(Json(serde_json::json!({ "projects": out })))
+    Ok(out)
 }
 
 // ── POST /api/v1/agent/search ────────────────────────────────────────────────
@@ -85,8 +97,8 @@ async fn search(
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let project_root =
-        resolve_project_path(&state.config.projects_root, &req.project_path).map_err(|e| {
+    let project_root = resolve_project_path(&state.config.projects_root, &req.project_path)
+        .map_err(|e| {
             ApiError::bad_request("PATH_ESCAPE", e.to_string())
                 .with_details(serde_json::json!({ "requested": req.project_path }))
         })?;
@@ -103,6 +115,138 @@ async fn search(
 
     let value = serde_json::to_value(&result).map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(Json(value))
+}
+
+// ── Token-protected project API for public agent clients ─────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ProjectSearchRequest {
+    query: String,
+    #[serde(default, alias = "topK")]
+    top_k: Option<usize>,
+    #[serde(default, alias = "includeContent")]
+    include_content: Option<bool>,
+    #[serde(default, alias = "queryEmbedding")]
+    query_embedding: Option<Vec<f32>>,
+}
+
+async fn token_projects(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    ensure_token_authorized(&headers)?;
+    Ok(Json(
+        serde_json::json!({ "projects": list_projects(&state)? }),
+    ))
+}
+
+async fn token_project_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(project_id): AxumPath<String>,
+    Json(req): Json<ProjectSearchRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    ensure_token_authorized(&headers)?;
+    if req.query.trim().is_empty() {
+        return Err(ApiError::bad_request("BAD_REQUEST", "query is required"));
+    }
+
+    let project_root = resolve_project_identifier(&state, &project_id)?;
+    let result = crate::core::search::search_project(
+        project_root.to_string_lossy().to_string(),
+        req.query,
+        req.top_k,
+        req.include_content,
+        req.query_embedding,
+        None,
+    )
+    .await?;
+
+    let value = serde_json::to_value(&result).map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(value))
+}
+
+fn ensure_token_authorized(headers: &HeaderMap) -> Result<(), ApiError> {
+    let expected = std::env::var("LLM_WIKI_API_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(ApiError::unauthenticated)?;
+    let Some(actual) = request_token(headers) else {
+        return Err(ApiError::unauthenticated());
+    };
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(ApiError::unauthenticated())
+    }
+}
+
+fn request_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+    {
+        let trimmed = value.trim();
+        if let Some(token) = trimmed
+            .strip_prefix("Bearer ")
+            .or_else(|| trimmed.strip_prefix("bearer "))
+        {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+    headers
+        .get("X-LLM-Wiki-Token")
+        .and_then(|h| h.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn resolve_project_identifier(state: &AppState, requested: &str) -> Result<PathBuf, ApiError> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "project id is required",
+        ));
+    }
+
+    let root = &state.config.projects_root;
+    let canon_root = root
+        .canonicalize()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    for entry in std::fs::read_dir(&canon_root).map_err(|e| ApiError::internal(e.to_string()))? {
+        let entry = entry.map_err(|e| ApiError::internal(e.to_string()))?;
+        let path = entry.path();
+        if !path.is_dir() || !is_valid_project_dir(&path) {
+            continue;
+        }
+        let id = crate::core::project::project_id_from_canonical_path(&path);
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel = path
+            .strip_prefix(&canon_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        if requested == id || requested == name || requested == rel {
+            return Ok(path);
+        }
+    }
+
+    Err(ApiError::new(
+        StatusCode::NOT_FOUND,
+        "NOT_FOUND",
+        format!("project not found: {requested}"),
+    ))
+}
+
+fn is_valid_project_dir(path: &std::path::Path) -> bool {
+    (path.join("schema.md").exists() || path.join(".llm-wiki/schema.md").exists())
+        && path.join("wiki").is_dir()
 }
 
 // ── GET /api/v1/agent/file ───────────────────────────────────────────────────
@@ -141,14 +285,16 @@ async fn file(
         ));
     }
 
-    let bytes = tokio::fs::read(&file_path).await.map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => ApiError::new(
-            StatusCode::NOT_FOUND,
-            "NOT_FOUND",
-            format!("file not found: {}", q.path),
-        ),
-        _ => ApiError::internal(e.to_string()),
-    })?;
+    let bytes = tokio::fs::read(&file_path)
+        .await
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => ApiError::new(
+                StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                format!("file not found: {}", q.path),
+            ),
+            _ => ApiError::internal(e.to_string()),
+        })?;
 
     let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
     let resp = Response::builder()

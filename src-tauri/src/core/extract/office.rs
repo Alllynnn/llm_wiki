@@ -61,9 +61,7 @@ fn build_pptx_media_slide_map(
 
     let rels_paths: Vec<String> = archive
         .file_names()
-        .filter(|n| {
-            n.starts_with("ppt/slides/_rels/slide") && n.ends_with(".xml.rels")
-        })
+        .filter(|n| n.starts_with("ppt/slides/_rels/slide") && n.ends_with(".xml.rels"))
         .map(String::from)
         .collect();
 
