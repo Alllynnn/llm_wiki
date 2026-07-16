@@ -17,6 +17,7 @@
  */
 // No @tauri-apps/api/core import — removed as part of Task 5.3 migration.
 import { copyFile, createDirectory, fileExists, readFileAsBase64 } from "@/commands/fs"
+import { apiCall } from "@/lib/api"
 import { getFileName, normalizePath } from "@/lib/path-utils"
 
 /** Mirrors `commands::extract_images::SavedImage` on the Rust side. */
@@ -168,18 +169,20 @@ export async function extractAndSaveSourceImages(
   const destDir = `${pp}/wiki/media/${slug}`
   const relTo = `${pp}/wiki`
 
-  // TODO(stub): Image extraction from PDF/Office files is now handled
-  // server-side during ingest (POST /api/v1/sources/ingest). The frontend
-  // no longer calls extract_and_save_pdf_images_cmd or
-  // extract_and_save_office_images_cmd directly.
-  // Returning [] preserves the caller contract without crashing.
-  void destDir
-  void relTo
-  console.warn(
-    `[ingest:images] extractAndSaveSourceImages is a no-op in browser/LAN mode. ` +
-    `Server-side ingest handles image extraction for "${fileName}".`,
-  )
-  return []
+  try {
+    return await apiCall<SavedImage[]>("POST", "/api/v1/files/extract-images", {
+      project_path: pp,
+      source_path: sp,
+      dest_dir: destDir,
+      rel_to: relTo,
+    })
+  } catch (err) {
+    console.warn(
+      `[ingest:images] server-side extraction failed for "${fileName}":`,
+      err instanceof Error ? err.message : err,
+    )
+    return []
+  }
 }
 
 export async function extractAndSaveMarkdownImages(

@@ -1,5 +1,5 @@
 import type { CustomApiMode } from "./llm-presets"
-import type { AzureModelFamily, CloseBehavior, MineruModelVersion, ReasoningConfig, SourceWatchConfig } from "@/stores/wiki-store"
+import type { AzureModelFamily, CloseBehavior, MineruEffort, MineruLocalBackend, MineruModelVersion, MineruParseMethod, ReasoningConfig, SourceWatchConfig } from "@/stores/wiki-store"
 
 /**
  * Shape of the draft state each section reads from and writes into.
@@ -9,7 +9,7 @@ import type { AzureModelFamily, CloseBehavior, MineruModelVersion, ReasoningConf
  */
 export interface SettingsDraft {
   // LLM provider
-  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax"
+  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
   apiKey: string
   model: string
   ollamaUrl: string
@@ -19,7 +19,6 @@ export interface SettingsDraft {
   maxContextSize: number
   apiMode: CustomApiMode | undefined
   reasoning: ReasoningConfig | undefined
-  /** @deprecated Kept for backward-compat; ignored at runtime. */
   localCliIsolation: boolean
 
   // Embedding
@@ -33,13 +32,17 @@ export interface SettingsDraft {
   embeddingMaxChunkChars: number | undefined
   /** Overlap characters between adjacent chunks. Empty = default (200). */
   embeddingOverlapChunkChars: number | undefined
+  /** Maximum number of embedding requests in flight. */
+  embeddingConcurrency: number
+  /** Inputs per request for OpenAI-compatible batch endpoints. */
+  embeddingBatchSize: number
   /** Extra HTTP headers to send on every embedding request. Empty = none. */
   embeddingExtraHeaders: Record<string, string>
 
   // Multimodal (image captioning at ingest time)
   multimodalEnabled: boolean
   multimodalUseMainLlm: boolean
-  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax"
+  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
   multimodalApiKey: string
   multimodalModel: string
   multimodalOllamaUrl: string
@@ -60,12 +63,18 @@ export interface SettingsDraft {
   proxyUrl: string
   proxyBypassLocal: boolean
 
+  // Scheduled Import
+  scheduledImportEnabled: boolean
+  scheduledImportPath: string
+  scheduledImportInterval: number // minutes
+
   // UI
   uiLanguage: string
   theme: "light" | "dark" | "system"
   zoomLevel: number
 
   // General app behavior
+  autostart: boolean
   closeBehavior: CloseBehavior
 
   // Source folder auto watch
@@ -73,12 +82,23 @@ export interface SettingsDraft {
 
   // MinerU PDF parsing
   mineruEnabled: boolean
+  mineruBackend: "cloud" | "local"
+  mineruLocalEndpoint: string
+  mineruLocalBackend: MineruLocalBackend
+  mineruLocalEffort: MineruEffort
+  mineruLocalParseMethod: MineruParseMethod
+  mineruLocalLanguage: string
+  mineruLocalFormulaEnabled: boolean
+  mineruLocalTableEnabled: boolean
+  mineruLocalImageAnalysis: boolean
+  mineruLocalServerUrl: string
   mineruToken: string
   mineruModelVersion: MineruModelVersion
 
   // Local HTTP API server
   apiEnabled: boolean
   apiAllowUnauthenticated: boolean
+  apiAllowLanAccess: boolean
   apiMcpEnabled: boolean
   apiToken: string
 }

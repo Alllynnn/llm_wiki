@@ -414,10 +414,7 @@ mod tests {
             root.join(".obsidian/app.json").exists(),
             ".obsidian/app.json missing"
         );
-        assert!(
-            root.join("raw/sources").is_dir(),
-            "raw/sources dir missing"
-        );
+        assert!(root.join("raw/sources").is_dir(), "raw/sources dir missing");
         assert!(root.join("wiki/entities").is_dir(), "wiki/entities missing");
     }
 
@@ -440,7 +437,10 @@ mod tests {
         std::fs::create_dir_all(base.join(name)).unwrap();
 
         let result = create_project(name.to_string(), base.to_string_lossy().to_string());
-        assert!(result.is_err(), "expected Err when directory already exists");
+        assert!(
+            result.is_err(),
+            "expected Err when directory already exists"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("already exists") || msg.contains("Directory already exists"),
@@ -461,7 +461,10 @@ mod tests {
         let project = result.expect("open_project should succeed");
 
         assert_eq!(project.name, "open-me");
-        assert!(!project.path.contains('\\'), "path should use forward slashes");
+        assert!(
+            !project.path.contains('\\'),
+            "path should use forward slashes"
+        );
     }
 
     #[test]

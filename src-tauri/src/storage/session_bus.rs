@@ -100,7 +100,10 @@ mod tests {
     use serde_json::json;
 
     fn evt(t: &str) -> SseEvent {
-        SseEvent { event_type: t.into(), data: json!({}) }
+        SseEvent {
+            event_type: t.into(),
+            data: json!({}),
+        }
     }
 
     #[tokio::test]

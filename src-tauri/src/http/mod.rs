@@ -8,22 +8,25 @@
 //! - `error_mapping`: `From<XError> for ApiError` impls for every `core::*` error (Task 4.1).
 //! - `session_event_sink`: `SessionEventSink` — routes `EventSink::emit` to the session's SSE stream (Task 4.1).
 
-pub mod error;
+pub mod agent;
 pub mod auth;
-pub mod events;
-pub mod embed;
-pub mod error_mapping;
-pub mod session_event_sink;
-pub mod projects;
-pub mod sources;
-pub mod wiki;
 pub mod chat;
 pub mod config;
-pub mod fs_browser;
+pub mod embed;
+pub mod error;
+pub mod error_mapping;
+pub mod events;
 pub mod files;
+pub mod fs_browser;
+pub mod projects;
 pub mod proxy;
 pub mod proxy_raw;
-pub mod agent;
+pub mod session_event_sink;
+pub mod sources;
+pub mod user_config;
+pub mod visual_hardcase_qc;
+mod visual_hardcase_qc_support;
+pub mod wiki;
 
 use std::sync::Arc;
 
@@ -78,7 +81,9 @@ pub fn main_router(state: AppState) -> Router {
 
     Router::new()
         .merge(authed)
-        .merge(authed_agent)                       // agent routes with their own auth layers
+        .merge(authed_agent) // agent routes with their own auth layers
+        .merge(agent::token_project_router().with_state(state.clone())) // public agent API, token-protected
+        .merge(visual_hardcase_qc::visual_hardcase_qc_router().with_state(state.clone())) // token-protected QC job API
         .fallback(embed::spa_fallback)
         // Cookie layer needs to be outermost so cookies are parsed before
         // the session middleware runs.
@@ -95,7 +100,7 @@ async fn health() -> Json<serde_json::Value> {
 pub fn legacy_router(state: AppState) -> Router {
     let r = Router::new()
         .route("/api/v1/health", get(health))
-        .merge(agent::agent_router())              // no route_layer = no auth
+        .merge(agent::agent_router()) // no route_layer = no auth
         .with_state(state);
     Router::new().merge(r).layer(CookieManagerLayer::new())
 }
@@ -138,10 +143,7 @@ mod tests {
         (dir, state)
     }
 
-    fn build_state_with_user(
-        username: &str,
-        password: &str,
-    ) -> (TempDir, AppState) {
+    fn build_state_with_user(username: &str, password: &str) -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
         let hash = hash_password(password).unwrap();
         let users_path = dir.path().join("users.toml");
@@ -187,7 +189,12 @@ mod tests {
         let (_dir, state) = build_state();
         let app = main_router(state);
         let resp = app
-            .oneshot(Request::builder().uri("/api/v1/health").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
@@ -296,7 +303,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let cookie = extract_set_cookie(&resp).split(';').next().unwrap().to_string();
+        let cookie = extract_set_cookie(&resp)
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
 
         // log out
         let resp = app
@@ -362,7 +373,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let cookie = extract_set_cookie(&resp).split(';').next().unwrap().to_string();
+        let cookie = extract_set_cookie(&resp)
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
 
         // Spawn the SSE request in a task and let it run far enough to register.
         // We hold the response alive so the SSE body stream (and its guard) is
@@ -393,7 +408,10 @@ mod tests {
         // Wait for the spawned task to signal it has received the response.
         let _ = rx.await;
 
-        assert!(bus.registered_count() >= 1, "session was not registered in bus");
+        assert!(
+            bus.registered_count() >= 1,
+            "session was not registered in bus"
+        );
 
         handle.abort();
     }
@@ -433,7 +451,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let cookie = extract_set_cookie(&resp).split(';').next().unwrap().to_string();
+        let cookie = extract_set_cookie(&resp)
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
 
         // open with .. should fail
         let resp = app
@@ -488,7 +510,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let cookie = extract_set_cookie(&resp).split(';').next().unwrap().to_string();
+        let cookie = extract_set_cookie(&resp)
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
 
         let resp = app
             .oneshot(
@@ -591,7 +617,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 200, "login failed");
-        extract_set_cookie(&resp).split(';').next().unwrap().to_string()
+        extract_set_cookie(&resp)
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
     }
 
     // ── Wiki tests ────────────────────────────────────────────────────────────
@@ -987,8 +1017,7 @@ mod tests {
         )
         .unwrap();
         let users = crate::auth::users::Users::load(&users_path).unwrap();
-        let sessions =
-            crate::auth::sessions::Sessions::open(&dir.path().join("sessions")).unwrap();
+        let sessions = crate::auth::sessions::Sessions::open(&dir.path().join("sessions")).unwrap();
         let user_data = UserData::new(dir.path().to_path_buf());
         let bus = crate::storage::session_bus::SessionBus::new();
         let projects_root = dir.path().join("projects");
@@ -1030,8 +1059,7 @@ mod tests {
 
     #[tokio::test]
     async fn fs_list_root_returns_entries() {
-        let (_dir, state, projects_root) =
-            build_state_with_real_projects_root("alice", "pw");
+        let (_dir, state, projects_root) = build_state_with_real_projects_root("alice", "pw");
         // Create a project subdir (with schema.md so is_project = true) and a plain dir.
         let proj_dir = projects_root.join("myproj");
         std::fs::create_dir_all(&proj_dir).unwrap();
@@ -1177,8 +1205,7 @@ mod tests {
 
     #[tokio::test]
     async fn files_raw_returns_content_with_correct_content_type() {
-        let (_dir, state, projects_root) =
-            build_state_with_real_projects_root("alice", "pw");
+        let (_dir, state, projects_root) = build_state_with_real_projects_root("alice", "pw");
         // Create a minimal project with a markdown file.
         let proj_dir = projects_root.join("proj");
         std::fs::create_dir_all(&proj_dir).unwrap();
@@ -1206,15 +1233,17 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        assert!(ct.contains("markdown") || ct.contains("text"), "expected text or markdown content-type, got {ct}");
+        assert!(
+            ct.contains("markdown") || ct.contains("text"),
+            "expected text or markdown content-type, got {ct}"
+        );
         let body = to_bytes(resp.into_body(), 4096).await.unwrap();
         assert!(body.starts_with(b"# Hello"));
     }
 
     #[tokio::test]
     async fn files_raw_rejects_path_traversal() {
-        let (_dir, state, projects_root) =
-            build_state_with_real_projects_root("alice", "pw");
+        let (_dir, state, projects_root) = build_state_with_real_projects_root("alice", "pw");
         // Create the project dir so the project_path resolves.
         let proj_dir = projects_root.join("proj");
         std::fs::create_dir_all(&proj_dir).unwrap();
@@ -1241,8 +1270,7 @@ mod tests {
 
     #[tokio::test]
     async fn files_raw_returns_404_for_missing_file() {
-        let (_dir, state, projects_root) =
-            build_state_with_real_projects_root("alice", "pw");
+        let (_dir, state, projects_root) = build_state_with_real_projects_root("alice", "pw");
         let proj_dir = projects_root.join("proj");
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(proj_dir.join("schema.md"), b"# Schema\n").unwrap();
@@ -1282,8 +1310,7 @@ mod tests {
         )
         .unwrap();
         let users = crate::auth::users::Users::load(&users_path).unwrap();
-        let sessions =
-            crate::auth::sessions::Sessions::open(&dir.path().join("sessions")).unwrap();
+        let sessions = crate::auth::sessions::Sessions::open(&dir.path().join("sessions")).unwrap();
         let user_data = crate::storage::user_data::UserData::new(dir.path().to_path_buf());
         let bus = crate::storage::session_bus::SessionBus::new();
         let projects_root = dir.path().join("projects");
@@ -1377,7 +1404,10 @@ mod tests {
         assert_eq!(resp.status(), 200);
         let body = to_bytes(resp.into_body(), 4096).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(v["results"].is_array(), "expected results array in search response");
+        assert!(
+            v["results"].is_array(),
+            "expected results array in search response"
+        );
     }
 
     #[tokio::test]

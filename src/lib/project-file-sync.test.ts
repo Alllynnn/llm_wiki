@@ -250,6 +250,46 @@ describe("project file sync", () => {
     ])
   })
 
+  it("enqueues skill-produced Lark source files through the normal source watcher", async () => {
+    vi.useFakeTimers()
+    const { startProjectFileSync } = await import("@/lib/project-file-sync")
+    const { useWikiStore } = await import("@/stores/wiki-store")
+
+    const project = { id: "A", name: "A", path: "/tmp/a" }
+    useWikiStore.getState().setProject(project)
+    void startProjectFileSync(project)
+
+    await vi.waitFor(() => {
+      expect(mocks.subscribe).toHaveBeenCalledTimes(2)
+    })
+
+    mocks.emit("file-sync://changed", {
+      projectId: "A",
+      tasks: [
+        {
+          id: "lark-1",
+          projectId: "A",
+          path: "raw/sources/lark/project-plan/page.md",
+          kind: "created",
+          status: "done",
+          createdAt: 1,
+          updatedAt: 1,
+          retryCount: 0,
+          needsRerun: false,
+        },
+      ],
+    })
+
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(mocks.enqueueBatch).toHaveBeenCalledWith("A", [
+      {
+        sourcePath: "raw/sources/lark/project-plan/page.md",
+        folderContext: "lark > project-plan",
+      },
+    ])
+  })
+
   it("does not ingest preprocessed cache files from raw/sources/.cache", async () => {
     vi.useFakeTimers()
     const { startProjectFileSync } = await import("@/lib/project-file-sync")

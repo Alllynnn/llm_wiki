@@ -1,0 +1,6 @@
+interface:
+  display_name: "视觉难题模板生成"
+  short_description: "按 LLM Wiki 规则生成构造模板和检查表"
+  default_prompt: "Use $visual-hardcase-template-generator to generate a reusable visual hardcase construction template."
+policy:
+  allow_implicit_invocation: true

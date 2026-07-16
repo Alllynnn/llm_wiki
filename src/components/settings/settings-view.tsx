@@ -117,6 +117,8 @@ function initialDraft(
     embeddingOutputDimensionality: embed.outputDimensionality,
     embeddingMaxChunkChars: embed.maxChunkChars,
     embeddingOverlapChunkChars: embed.overlapChunkChars,
+    embeddingConcurrency: embed.concurrency ?? 1,
+    embeddingBatchSize: embed.batchSize ?? 1,
     embeddingExtraHeaders: embed.extraHeaders ?? {},
     multimodalEnabled: multimodal.enabled,
     multimodalUseMainLlm: multimodal.useMainLlm,
@@ -134,14 +136,30 @@ function initialDraft(
     proxyEnabled: proxy.enabled,
     proxyUrl: proxy.url,
     proxyBypassLocal: proxy.bypassLocal,
+    scheduledImportEnabled: false,
+    scheduledImportPath: "",
+    scheduledImportInterval: 60,
     sourceWatchConfig: normalizeSourceWatchConfig(sourceWatch),
     mineruEnabled: mineru.enabled,
+    mineruBackend: mineru.backend || "cloud",
+    mineruLocalEndpoint:
+      mineru.localEndpoint || "http://127.0.0.1:8000",
+    mineruLocalBackend: mineru.localBackend || "hybrid-engine",
+    mineruLocalEffort: mineru.localEffort || "medium",
+    mineruLocalParseMethod: mineru.localParseMethod || "auto",
+    mineruLocalLanguage: mineru.localLanguage || "ch",
+    mineruLocalFormulaEnabled: mineru.localFormulaEnabled !== false,
+    mineruLocalTableEnabled: mineru.localTableEnabled !== false,
+    mineruLocalImageAnalysis: mineru.localImageAnalysis !== false,
+    mineruLocalServerUrl: mineru.localServerUrl || "",
     mineruToken: mineru.token,
     mineruModelVersion: mineru.modelVersion,
     apiEnabled: apiConfig.enabled,
     apiAllowUnauthenticated: apiConfig.allowUnauthenticated,
+    apiAllowLanAccess: apiConfig.allowLanAccess,
     apiMcpEnabled: apiConfig.mcpEnabled,
     apiToken: apiConfig.token,
+    autostart: generalConfig.autostart,
     closeBehavior: generalConfig.closeBehavior,
     uiLanguage,
     theme: theme ?? "system",
@@ -326,6 +344,8 @@ export function SettingsView() {
       outputDimensionality: draft.embeddingOutputDimensionality,
       maxChunkChars: draft.embeddingMaxChunkChars,
       overlapChunkChars: draft.embeddingOverlapChunkChars,
+      concurrency: Math.max(1, Math.min(32, Math.floor(draft.embeddingConcurrency || 1))),
+      batchSize: Math.max(1, Math.min(64, Math.floor(draft.embeddingBatchSize || 1))),
       extraHeaders: draft.embeddingExtraHeaders,
     }
     const newMultimodal = {
@@ -356,16 +376,28 @@ export function SettingsView() {
     const newSourceWatch = normalizeSourceWatchConfig(draft.sourceWatchConfig)
     const newMineruConfig = {
       enabled: draft.mineruEnabled,
+      backend: draft.mineruBackend,
+      localEndpoint: draft.mineruLocalEndpoint.trim(),
+      localBackend: draft.mineruLocalBackend,
+      localEffort: draft.mineruLocalEffort,
+      localParseMethod: draft.mineruLocalParseMethod,
+      localLanguage: draft.mineruLocalLanguage.trim(),
+      localFormulaEnabled: draft.mineruLocalFormulaEnabled,
+      localTableEnabled: draft.mineruLocalTableEnabled,
+      localImageAnalysis: draft.mineruLocalImageAnalysis,
+      localServerUrl: draft.mineruLocalServerUrl.trim(),
       token: draft.mineruToken.trim(),
       modelVersion: draft.mineruModelVersion,
     }
     const newApiConfig = {
       enabled: draft.apiEnabled,
       allowUnauthenticated: draft.apiAllowUnauthenticated,
+      allowLanAccess: draft.apiAllowLanAccess,
       mcpEnabled: draft.apiMcpEnabled,
       token: draft.apiToken.trim(),
     }
     const newGeneralConfig = {
+      autostart: draft.autostart,
       closeBehavior: draft.closeBehavior,
     }
 

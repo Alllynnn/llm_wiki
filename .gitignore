@@ -28,6 +28,13 @@ AGENTS.md
 # Benchmark and test data (local only)
 tests/
 
+# Runtime/user data (local only)
+data/
+data-codex-temp/
+projects/
+exports/
+.agents/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -49,3 +56,11 @@ pnpm-debug.log*
 # Brainstorm assets (not tracked in source control)
 .superpowers/
 .claude/
+
+# Local Codex automation state and secrets
+.tmp/
+tmp/
+".tmp/
+.codex/**/__pycache__/
+.codex/**/config/*.txt
+*.py[cod]

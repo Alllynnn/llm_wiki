@@ -7,12 +7,12 @@
 //! The persistent queue is managed by `core::ingest_queue`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::AssertUnwindSafe;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use std::panic::AssertUnwindSafe;
-use std::sync::mpsc;
 
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -20,10 +20,10 @@ use walkdir::WalkDir;
 
 use crate::core::events::EventSink;
 use crate::core::ingest_queue::{
-    ensure_sync_dir, enqueue_paths, enqueue_rescan_changes, enqueue_rescan_changes_for_prefixes,
-    now_ms, path_key, read_queue, reset_processing_tasks, sync_snapshot_paths,
-    with_queue_lock, write_queue, FileChangeQueue, FileChangeStatus, FileChangeTask,
-    FileChangeRescanResult, read_meta, read_snapshot, write_task_meta_to_snapshot,
+    enqueue_paths, enqueue_rescan_changes, enqueue_rescan_changes_for_prefixes, ensure_sync_dir,
+    now_ms, path_key, read_meta, read_queue, read_snapshot, reset_processing_tasks,
+    sync_snapshot_paths, with_queue_lock, write_queue, write_task_meta_to_snapshot,
+    FileChangeQueue, FileChangeRescanResult, FileChangeStatus, FileChangeTask,
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1461,13 +1461,7 @@ mod tests_event_sink {
         fs::write(root.join("raw/sources/hello.md"), "# Hello").unwrap();
 
         let sink = CapturingEventSink::default();
-        rescan_project_files(
-            project_id,
-            root.to_str().unwrap(),
-            None,
-            &sink,
-        )
-        .unwrap();
+        rescan_project_files(project_id, root.to_str().unwrap(), None, &sink).unwrap();
 
         let events = sink.snapshot();
         assert!(
@@ -1487,13 +1481,7 @@ mod tests_event_sink {
         fs::write(root.join("raw/sources/doc.md"), "content").unwrap();
 
         let sink = CapturingEventSink::default();
-        rescan_project_files(
-            project_id,
-            root.to_str().unwrap(),
-            None,
-            &sink,
-        )
-        .unwrap();
+        rescan_project_files(project_id, root.to_str().unwrap(), None, &sink).unwrap();
 
         let events = sink.snapshot();
         assert!(
@@ -1515,22 +1503,14 @@ mod tests_event_sink {
         fs::write(root.join("raw/sources/a.md"), "aaa").unwrap();
 
         let sink = CapturingEventSink::default();
-        rescan_project_files(
-            project_id,
-            root.to_str().unwrap(),
-            None,
-            &sink,
-        )
-        .unwrap();
+        rescan_project_files(project_id, root.to_str().unwrap(), None, &sink).unwrap();
 
         let events = sink.snapshot();
         let first_queue_pos = events
             .iter()
             .position(|(t, _)| t == EVENT_QUEUE_UPDATED)
             .expect("no EVENT_QUEUE_UPDATED");
-        let first_changed_pos = events
-            .iter()
-            .position(|(t, _)| t == EVENT_CHANGED);
+        let first_changed_pos = events.iter().position(|(t, _)| t == EVENT_CHANGED);
 
         // If there is a changed event it must come after the first queue-updated.
         if let Some(changed_pos) = first_changed_pos {
@@ -1553,13 +1533,7 @@ mod tests_event_sink {
         fs::write(root.join("raw/sources/x.md"), "x").unwrap();
 
         let sink = CapturingEventSink::default();
-        rescan_project_files(
-            project_id,
-            root.to_str().unwrap(),
-            None,
-            &sink,
-        )
-        .unwrap();
+        rescan_project_files(project_id, root.to_str().unwrap(), None, &sink).unwrap();
 
         let events = sink.snapshot();
         let queue_event = events
@@ -1572,10 +1546,7 @@ mod tests_event_sink {
             payload.get("projectId").is_some(),
             "payload missing projectId"
         );
-        assert!(
-            payload.get("tasks").is_some(),
-            "payload missing tasks"
-        );
+        assert!(payload.get("tasks").is_some(), "payload missing tasks");
         assert_eq!(
             payload["projectId"].as_str(),
             Some(project_id),

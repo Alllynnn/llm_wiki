@@ -27,6 +27,10 @@ import {
   sourceSummaryMediaRefsForExternalMarkdown,
   aggregatePathsNeedingRepair,
   filterAggregateRepairOutput,
+  rewriteIngestPathFromTitleForTargetLanguage,
+  canonicalizeSourcesField,
+  isAppManagedAggregatePath,
+  updateBoundedRecentIndexSection,
 } from "./ingest"
 
 // ── Happy paths ─────────────────────────────────────────────────────
@@ -109,11 +113,13 @@ describe("source summary media refs", () => {
 })
 
 describe("aggregate repair targeting", () => {
-  it("requests missing aggregate pages and aggregate pages dropped by truncation warnings", () => {
+  it("repairs only the append-only log and leaves deterministic aggregates to the app", () => {
     expect(aggregatePathsNeedingRepair(
       ["wiki/index.md", "wiki/log.md"],
       ['FILE block "wiki/overview.md" was not closed before end of stream — likely truncation.'],
-    )).toEqual(["wiki/overview.md"])
+    )).toEqual([])
+
+    expect(aggregatePathsNeedingRepair(["wiki/index.md"], [])).toEqual(["wiki/log.md"])
 
     expect(aggregatePathsNeedingRepair(
       ["wiki/index.md", "wiki/overview.md", "wiki/log.md"],
@@ -587,5 +593,92 @@ describe("generated ingest dates", () => {
     expect(prompt).toContain("Today's date is")
     expect(prompt).toContain("Use this exact date")
     expect(prompt).not.toContain("created: 2026-04-29")
+  })
+})
+
+describe("rewriteIngestPathFromTitleForTargetLanguage", () => {
+  it("uses the CJK page title for generated page filenames when the target language is CJK", () => {
+    const content = [
+      "---",
+      "type: concept",
+      "title: 反硝化除磷技术",
+      "created: 2026-06-18",
+      "---",
+      "",
+      "# 反硝化除磷技术",
+      "",
+      "正文。",
+    ].join("\n")
+
+    expect(
+      rewriteIngestPathFromTitleForTargetLanguage(
+        "wiki/concepts/denitrifying-phosphorus-removal.md",
+        content,
+        "Chinese",
+      ),
+    ).toBe("wiki/concepts/反硝化除磷技术.md")
+  })
+
+  it("does not rewrite source summaries or aggregate pages", () => {
+    const content = "---\ntitle: 反硝化除磷技术\n---\n# 反硝化除磷技术"
+
+    expect(
+      rewriteIngestPathFromTitleForTargetLanguage("wiki/sources/source-slug.md", content, "Chinese"),
+    ).toBe("wiki/sources/source-slug.md")
+    expect(
+      rewriteIngestPathFromTitleForTargetLanguage("wiki/index.md", content, "Chinese"),
+    ).toBe("wiki/index.md")
+  })
+})
+
+describe("canonicalizeSourcesField", () => {
+  it("removes generated and unsafe paths while preserving raw source identities", () => {
+    const content = [
+      "---",
+      "title: Entity",
+      'sources: ["wiki/log.md", "wiki/index.md", ".llm-wiki/state.json", "/tmp/secret.md", "../escape.md", "raw/sources/folder/source.md"]',
+      "---",
+      "# Entity",
+    ].join("\n")
+
+    const result = canonicalizeSourcesField(content, "folder/source.md")
+
+    expect(result).toContain('sources: ["folder/source.md"]')
+    expect(result).not.toContain("wiki/log.md")
+    expect(result).not.toContain(".llm-wiki")
+    expect(result).not.toContain("/tmp/secret.md")
+    expect(result).not.toContain("../escape.md")
+  })
+
+  it("preserves a legitimate source identity under a wiki-named raw subfolder", () => {
+    const content = '---\ntitle: Notes\nsources: ["raw/sources/wiki/notes.md"]\n---\n# Notes'
+    expect(canonicalizeSourcesField(content, "wiki/notes.md")).toContain(
+      'sources: ["wiki/notes.md"]',
+    )
+  })
+})
+
+describe("application-managed aggregate boundaries", () => {
+  it("recognizes case and separator variants", () => {
+    expect(isAppManagedAggregatePath("wiki/INDEX.md")).toBe(true)
+    expect(isAppManagedAggregatePath("wiki\\overview.MD")).toBe(true)
+    expect(isAppManagedAggregatePath("wiki/entities/index.md")).toBe(false)
+  })
+
+  it("bounds recent entries and preserves following sections", () => {
+    const existing = [
+      "# Wiki Index",
+      "",
+      "## Recently Updated",
+      ...Array.from({ length: 205 }, (_, index) => `- [[old-${index}]] — Old ${index}`),
+      "",
+      "## Other",
+      "Keep me",
+    ].join("\n")
+    const result = updateBoundedRecentIndexSection(existing, ["- [[new]] — New"])
+    const recent = result.split("## Recently Updated")[1].split("## Other")[0]
+    expect(recent.match(/^- \[\[/gm)).toHaveLength(200)
+    expect(recent).toContain("[[new]]")
+    expect(result).toContain("## Other\nKeep me")
   })
 })

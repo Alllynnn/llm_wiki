@@ -1,5 +1,5 @@
 import {
-  FileText, FolderOpen, Search, Network, ClipboardCheck, Settings, ArrowLeftRight, ClipboardList, Globe,
+  FileText, FolderOpen, Search, Network, ClipboardCheck, Settings, ArrowLeftRight, ClipboardList, Globe, MessageSquare, Sparkles,
 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useWikiStore } from "@/stores/wiki-store"
@@ -12,7 +12,8 @@ import type { WikiState } from "@/stores/wiki-store"
 
 type NavView = WikiState["activeView"]
 
-const NAV_ITEMS: { view: NavView; icon: typeof FileText; labelKey: string }[] = [
+export const NAV_ITEMS: { view: NavView; icon: typeof FileText; labelKey: string }[] = [
+  { view: "chat", icon: MessageSquare, labelKey: "nav.chat" },
   { view: "wiki", icon: FileText, labelKey: "nav.wiki" },
   { view: "sources", icon: FolderOpen, labelKey: "nav.sources" },
   { view: "search", icon: Search, labelKey: "nav.search" },
@@ -96,6 +97,19 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
               )}
             </TooltipTrigger>
             <TooltipContent side="right">{t("research.title")}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              onClick={() => setActiveView("skills")}
+              className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
+                activeView === "skills"
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
+              }`}
+            >
+              <Sparkles className="h-5 w-5" />
+            </TooltipTrigger>
+            <TooltipContent side="right">{t("nav.skills")}</TooltipContent>
           </Tooltip>
         </div>
         {/* Bottom: settings + switch project */}

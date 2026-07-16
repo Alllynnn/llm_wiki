@@ -1,25 +1,28 @@
 import { getConfigKey, setConfigKey, deleteConfigKey } from "@/lib/user-config"
 import type { WikiProject } from "@/types/wiki"
-import type { ApiConfig, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProviderConfigs, ProxyConfig, SourceWatchConfig } from "@/stores/wiki-store"
+import type { ApiConfig, CustomLlmPreset, GeneralConfig, LlmConfig, SearchApiConfig, EmbeddingConfig, MineruConfig, MultimodalConfig, OutputLanguage, ProjectLlmOverride, ProviderConfigs, ProxyConfig, ScheduledImportConfig, SourceWatchConfig, TaskModelRoutingConfig } from "@/stores/wiki-store"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
+import { normalizePath } from "@/lib/path-utils"
 import { DEFAULT_ZOOM_LEVEL, clampZoomLevel } from "@/stores/zoom-store"
+import { attachNormalizedMetadata } from "@/lib/knowledge-platform"
 
 const RECENT_PROJECTS_KEY = "recentProjects"
 const LAST_PROJECT_KEY = "lastProject"
 
 export async function getRecentProjects(): Promise<WikiProject[]> {
   const projects = await getConfigKey<WikiProject[]>(RECENT_PROJECTS_KEY)
-  return projects ?? []
+  return (projects ?? []).map(normalizeStoredProject)
 }
 
 export async function getLastProject(): Promise<WikiProject | null> {
   const project = await getConfigKey<WikiProject>(LAST_PROJECT_KEY)
-  return project ?? null
+  return project ? normalizeStoredProject(project) : null
 }
 
 export async function saveLastProject(project: WikiProject): Promise<void> {
-  await setConfigKey(LAST_PROJECT_KEY, project)
-  await addToRecentProjects(project)
+  const normalized = normalizeStoredProject(project)
+  await setConfigKey(LAST_PROJECT_KEY, normalized)
+  await addToRecentProjects(normalized)
 }
 
 export async function addToRecentProjects(
@@ -27,13 +30,18 @@ export async function addToRecentProjects(
 ): Promise<void> {
   const existing = (await getConfigKey<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
   const filtered = existing.filter((p) => p.path !== project.path)
-  const updated = [project, ...filtered].slice(0, 10)
+  const updated = [normalizeStoredProject(project), ...filtered.map(normalizeStoredProject)].slice(0, 10)
   await setConfigKey(RECENT_PROJECTS_KEY, updated)
 }
 
 const LLM_CONFIG_KEY = "llmConfig"
 const PROVIDER_CONFIGS_KEY = "providerConfigs"
 const ACTIVE_PRESET_KEY = "activePresetId"
+const TASK_MODEL_ROUTING_KEY = "taskModelRouting"
+const PROJECT_LLM_OVERRIDES_KEY = "projectLlmOverrides"
+const CUSTOM_LLM_PRESETS_KEY = "customLlmPresets"
+let projectLlmOverrideWrite = Promise.resolve()
+let customLlmPresetWrite = Promise.resolve()
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
   await setConfigKey(LLM_CONFIG_KEY, config)
@@ -51,12 +59,80 @@ export async function loadProviderConfigs(): Promise<ProviderConfigs | null> {
   return (await getConfigKey<ProviderConfigs>(PROVIDER_CONFIGS_KEY)) ?? null
 }
 
+export async function saveCustomLlmPresets(presets: CustomLlmPreset[]): Promise<void> {
+  const normalized = normalizeCustomLlmPresets(presets)
+  const write = customLlmPresetWrite.then(() => setConfigKey(CUSTOM_LLM_PRESETS_KEY, normalized))
+  customLlmPresetWrite = write.catch(() => {})
+  await write
+}
+
+export async function loadCustomLlmPresets(): Promise<CustomLlmPreset[]> {
+  return normalizeCustomLlmPresets(await getConfigKey<unknown>(CUSTOM_LLM_PRESETS_KEY))
+}
+
+function normalizeCustomLlmPresets(value: unknown): CustomLlmPreset[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const normalized: CustomLlmPreset[] = []
+  for (const entry of value) {
+    if (normalized.length >= 50) break
+    const candidate = entry as Partial<CustomLlmPreset> | null
+    if (!candidate || typeof candidate !== "object") continue
+    if (typeof candidate.id !== "string" || !/^custom-[A-Za-z0-9-]{1,80}$/.test(candidate.id)) continue
+    const label = typeof candidate.label === "string" ? candidate.label.trim().slice(0, 80) : ""
+    if (!label || seen.has(candidate.id)) continue
+    seen.add(candidate.id)
+    normalized.push({ id: candidate.id, label })
+  }
+  return normalized
+}
+
 export async function saveActivePresetId(id: string | null): Promise<void> {
   await setConfigKey(ACTIVE_PRESET_KEY, id)
 }
 
 export async function loadActivePresetId(): Promise<string | null> {
   return (await getConfigKey<string | null>(ACTIVE_PRESET_KEY)) ?? null
+}
+
+export async function saveTaskModelRouting(config: TaskModelRoutingConfig): Promise<void> {
+  await setConfigKey(TASK_MODEL_ROUTING_KEY, config)
+}
+
+export async function loadTaskModelRouting(): Promise<TaskModelRoutingConfig | null> {
+  const saved = await getConfigKey<Partial<TaskModelRoutingConfig>>(TASK_MODEL_ROUTING_KEY)
+  if (!saved) return null
+  return {
+    chatPresetId: typeof saved.chatPresetId === "string" ? saved.chatPresetId : null,
+    ingestPresetId: typeof saved.ingestPresetId === "string" ? saved.ingestPresetId : null,
+  }
+}
+
+export async function saveProjectLlmOverride(
+  projectId: string,
+  config: ProjectLlmOverride,
+): Promise<void> {
+  const write = projectLlmOverrideWrite.then(async () => {
+    const existing = (await getConfigKey<Record<string, ProjectLlmOverride>>(
+      PROJECT_LLM_OVERRIDES_KEY,
+    )) ?? {}
+    await setConfigKey(PROJECT_LLM_OVERRIDES_KEY, { ...existing, [projectId]: config })
+  })
+  projectLlmOverrideWrite = write.catch(() => {})
+  await write
+}
+
+export async function loadProjectLlmOverride(projectId: string): Promise<ProjectLlmOverride> {
+  const existing = await getConfigKey<Record<string, Partial<ProjectLlmOverride>>>(
+    PROJECT_LLM_OVERRIDES_KEY,
+  )
+  const saved = existing?.[projectId]
+  return {
+    enabled: saved?.enabled === true,
+    presetId: typeof saved?.presetId === "string" ? saved.presetId : null,
+    model: typeof saved?.model === "string" ? saved.model : "",
+    profile: saved?.profile,
+  }
 }
 
 const SEARCH_API_KEY = "searchApiConfig"
@@ -108,6 +184,11 @@ function normalizeZoomLevel(level: unknown): number {
 export const __projectStoreTest = {
   normalizeMineruConfig,
   normalizeZoomLevel,
+  normalizeStoredProject,
+}
+
+function normalizeStoredProject(project: WikiProject): WikiProject {
+  return attachNormalizedMetadata(project)
 }
 
 export async function saveMineruConfig(config: MineruConfig): Promise<void> {
@@ -141,23 +222,40 @@ export async function loadProxyConfig(): Promise<ProxyConfig | null> {
 const API_CONFIG_KEY = "apiConfig"
 
 export async function saveApiConfig(config: ApiConfig): Promise<void> {
-  await setConfigKey(API_CONFIG_KEY, config)
+  await setConfigKey(API_CONFIG_KEY, normalizeApiConfig(config))
   // Note: the server persists immediately on every PUT — no explicit flush needed.
 }
 
 export async function loadApiConfig(): Promise<ApiConfig | null> {
-  return (await getConfigKey<ApiConfig>(API_CONFIG_KEY)) ?? null
+  const config = await getConfigKey<Partial<ApiConfig>>(API_CONFIG_KEY)
+  return config ? normalizeApiConfig(config) : null
+}
+
+export function normalizeApiConfig(config?: Partial<ApiConfig> | null): ApiConfig {
+  return {
+    enabled: typeof config?.enabled === "boolean" ? config.enabled : true,
+    allowUnauthenticated:
+      typeof config?.allowUnauthenticated === "boolean"
+        ? config.allowUnauthenticated
+        : false,
+    allowLanAccess:
+      typeof config?.allowLanAccess === "boolean" ? config.allowLanAccess : false,
+    mcpEnabled: typeof config?.mcpEnabled === "boolean" ? config.mcpEnabled : false,
+    token: typeof config?.token === "string" ? config.token : "",
+  }
 }
 
 const GENERAL_CONFIG_KEY = "generalConfig"
 
 export const DEFAULT_GENERAL_CONFIG: GeneralConfig = {
+  autostart: false,
   closeBehavior: "minimize",
 }
 
 export function normalizeGeneralConfig(config?: Partial<GeneralConfig> | null): GeneralConfig {
   const closeBehavior = config?.closeBehavior
   return {
+    autostart: typeof config?.autostart === "boolean" ? config.autostart : false,
     closeBehavior:
       closeBehavior === "ask" || closeBehavior === "minimize" || closeBehavior === "exit"
         ? closeBehavior
@@ -172,6 +270,36 @@ export async function saveGeneralConfig(config: GeneralConfig): Promise<void> {
 export async function loadGeneralConfig(): Promise<GeneralConfig> {
   const config = await getConfigKey<Partial<GeneralConfig>>(GENERAL_CONFIG_KEY)
   return normalizeGeneralConfig(config)
+}
+
+const SCHEDULED_IMPORT_KEY_PREFIX = "scheduledImportConfig:"
+const SCHEDULED_IMPORT_GLOBAL_KEY = "scheduledImportConfig"
+
+function scheduledImportKey(projectPath: string): string {
+  return `${SCHEDULED_IMPORT_KEY_PREFIX}${normalizePath(projectPath)}`
+}
+
+export async function saveScheduledImportConfig(
+  projectPath: string,
+  config: ScheduledImportConfig,
+): Promise<void> {
+  await setConfigKey(scheduledImportKey(projectPath), config)
+}
+
+export async function loadScheduledImportConfig(
+  projectPath: string,
+): Promise<ScheduledImportConfig | null> {
+  const perProject = await getConfigKey<ScheduledImportConfig>(
+    scheduledImportKey(projectPath),
+  )
+  if (perProject) return perProject
+
+  // Migrate from legacy global key (pre-0.4.8 official desktop behavior).
+  const legacy = await getConfigKey<ScheduledImportConfig>(SCHEDULED_IMPORT_GLOBAL_KEY)
+  if (!legacy) return null
+  await setConfigKey(scheduledImportKey(projectPath), legacy)
+  await deleteConfigKey(SCHEDULED_IMPORT_GLOBAL_KEY)
+  return legacy
 }
 
 export async function removeFromRecentProjects(

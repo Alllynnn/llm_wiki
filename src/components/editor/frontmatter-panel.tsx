@@ -18,7 +18,7 @@ import type { FrontmatterValue } from "@/lib/frontmatter"
 import { getWikiTypeStyle } from "@/lib/wiki-type-style"
 import {
   resolveRelatedSlug,
-  resolveSourceName,
+  resolveSourceReference,
   unwrapWikilink,
 } from "@/lib/wiki-page-resolver"
 import { useWikiStore } from "@/stores/wiki-store"
@@ -41,7 +41,7 @@ const TOP_LEVEL_KEYS = new Set([
 
 export function FrontmatterPanel({ data }: FrontmatterPanelProps) {
   const project = useWikiStore((s) => s.project)
-  const fileTree = useWikiStore((s) => s.fileTree)
+  const projectPathIndex = useWikiStore((s) => s.projectPathIndex)
   const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
 
   const title = stringValue(data.title)
@@ -149,15 +149,21 @@ export function FrontmatterPanel({ data }: FrontmatterPanelProps) {
           <div className="flex flex-wrap gap-2">
             {sources.map((source) => {
               const { slug, label } = unwrapWikilink(source)
-              const path = sourcesRoot
-                ? resolveSourceName(fileTree, slug, sourcesRoot)
-                : null
+              const resolution = resolveSourceReference(projectPathIndex, slug, sourcesRoot)
+              const path = resolution.kind === "local" ? resolution.path : null
+              const externalUrl = resolution.kind === "external" ? resolution.url : null
               return (
                 <SourceCard
                   key={source}
                   name={label}
-                  resolved={!!path}
-                  onClick={() => handleNavigate(path)}
+                  resolved={!!path || !!externalUrl}
+                  onClick={() => {
+                    if (externalUrl) {
+                      window.open(externalUrl, "_blank", "noopener,noreferrer")
+                      return
+                    }
+                    handleNavigate(path)
+                  }}
                 />
               )
             })}
@@ -177,7 +183,7 @@ export function FrontmatterPanel({ data }: FrontmatterPanelProps) {
             {related.map((entry) => {
               const { slug, label } = unwrapWikilink(entry)
               const path = wikiRoot
-                ? resolveRelatedSlug(fileTree, slug, wikiRoot)
+                ? resolveRelatedSlug(projectPathIndex, slug, wikiRoot)
                 : null
               return (
                 <RelatedChip

@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { sha256 } from "@noble/hashes/sha2";
 import App from "./App";
+import { LlmWikiArchitecturePage } from "@/components/architecture/llm-wiki-architecture-page";
 import "./index.css";
 import "@/i18n";
 import { loadAndApplyTheme, watchSystemTheme } from "@/lib/theme";
@@ -59,9 +60,11 @@ async function initApp() {
   await loadAndApplyTheme();
   watchSystemTheme();
 
+  const isArchitectureRoute = window.location.pathname === "/architecture";
+
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-      <App />
+      {isArchitectureRoute ? <LlmWikiArchitecturePage /> : <App />}
     </React.StrictMode>
   );
 }

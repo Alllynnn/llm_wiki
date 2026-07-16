@@ -2,7 +2,7 @@ import { useReviewStore } from "@/stores/review-store"
 import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
-import { saveReviewItems, saveLintItems, saveChatHistory } from "./persist"
+import { saveReviewItems, saveLintItems, saveChatHistory, saveChatPreferences } from "./persist"
 
 let reviewTimer: ReturnType<typeof setTimeout> | null = null
 let lintTimer: ReturnType<typeof setTimeout> | null = null
@@ -38,6 +38,14 @@ export async function flushAndSuspendAutoSave(): Promise<void> {
   await Promise.allSettled([
     saveReviewItems(projectPath, review),
     saveLintItems(projectPath, lint),
+    saveChatPreferences(projectPath, {
+      useWebSearch: chat.useWebSearch,
+      useAnyTxtSearch: chat.useAnyTxtSearch,
+      agentMode: chat.agentMode,
+      retrievalMode: chat.retrievalMode,
+      selectedSkills: chat.selectedSkills,
+      disabledSkills: chat.disabledSkills,
+    }),
     chat.isStreaming
       ? Promise.resolve()
       : saveChatHistory(projectPath, chat.conversations, chat.messages),
@@ -105,7 +113,17 @@ export function setupAutoSave(): void {
     if (chatTimer) clearTimeout(chatTimer)
     chatTimer = setTimeout(() => {
       if (projectPath) {
-        saveChatHistory(projectPath, state.conversations, state.messages).catch(() => {})
+        Promise.allSettled([
+          saveChatPreferences(projectPath, {
+            useWebSearch: state.useWebSearch,
+            useAnyTxtSearch: state.useAnyTxtSearch,
+            agentMode: state.agentMode,
+            retrievalMode: state.retrievalMode,
+            selectedSkills: state.selectedSkills,
+            disabledSkills: state.disabledSkills,
+          }),
+          saveChatHistory(projectPath, state.conversations, state.messages),
+        ]).catch(() => {})
       }
     }, 2000)
   })

@@ -10,11 +10,18 @@
 
 import { useChatStore } from "@/stores/chat-store"
 import { useReviewStore } from "@/stores/review-store"
+import { useLintStore } from "@/stores/lint-store"
 import { useActivityStore } from "@/stores/activity-store"
 import { useResearchStore } from "@/stores/research-store"
+import { useWikiStore } from "@/stores/wiki-store"
 
 export async function resetProjectState(): Promise<void> {
   // Zustand stores — clear all per-project data (synchronous)
+  const globalLlmConfig = useWikiStore.getState().globalLlmConfig
+  useWikiStore.setState({
+    llmConfig: globalLlmConfig,
+    projectLlmOverride: { enabled: false, presetId: null, model: "", profile: undefined },
+  })
   useChatStore.setState({
     conversations: [],
     messages: [],
@@ -23,9 +30,19 @@ export async function resetProjectState(): Promise<void> {
     ingestSource: null,
     isStreaming: false,
     streamingContent: "",
+    useWebSearch: false,
+    useAnyTxtSearch: false,
+    agentMode: "standard",
+    retrievalMode: "standard",
+    selectedSkills: [],
+    disabledSkills: [],
   })
 
   useReviewStore.setState({
+    items: [],
+  })
+
+  useLintStore.setState({
     items: [],
   })
 
@@ -40,12 +57,23 @@ export async function resetProjectState(): Promise<void> {
 
   // Module-level caches — load in parallel and clear each, surfacing any
   // failure instead of swallowing it.
-  const [queueMod, dedupQueueMod, graphMod, fileSyncMod] = await Promise.allSettled([
+  const [queueMod, dedupQueueMod, graphMod, fileSyncMod, scheduledImportMod] = await Promise.allSettled([
     import("@/lib/ingest-queue"),
     import("@/lib/dedup-queue"),
     import("@/lib/graph-relevance"),
     import("@/lib/project-file-sync"),
+    import("@/lib/scheduled-import"),
   ])
+
+  if (scheduledImportMod.status === "fulfilled") {
+    try {
+      scheduledImportMod.value.stopScheduledImport()
+    } catch (err) {
+      console.warn("[Reset Project State] stopScheduledImport failed:", err)
+    }
+  } else {
+    console.warn("[Reset Project State] Failed to load scheduled-import:", scheduledImportMod.reason)
+  }
 
   if (queueMod.status === "fulfilled") {
     try {

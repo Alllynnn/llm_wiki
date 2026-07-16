@@ -14,6 +14,17 @@ import { normalizePath } from "@/lib/path-utils"
 import { OUTPUT_LANGUAGE_OPTIONS } from "@/lib/output-language-options"
 import { useWikiStore, type OutputLanguage } from "@/stores/wiki-store"
 import { saveOutputLanguage } from "@/lib/project-store"
+import {
+  buildProjectSchemaContext,
+  buildProjectPurposeContext,
+  DEFAULT_PROJECT_METADATA,
+  getProjectKindsForCategory,
+  KNOWLEDGE_CATEGORIES,
+  type BusinessProjectMetadata,
+  type KnowledgeCategoryId,
+  type KnowledgeProjectKindId,
+} from "@/lib/knowledge-platform"
+import { saveProjectMetadata, upsertProjectInfo } from "@/lib/project-identity"
 
 interface CreateProjectDialogProps {
   open: boolean
@@ -21,9 +32,36 @@ interface CreateProjectDialogProps {
   onCreated: (project: WikiProject) => void
 }
 
+export interface CreateProjectFormStatus {
+  missingRequired: boolean
+  canCreate: boolean
+  footerMessageKey: string | null
+  footerError: string
+}
+
+export function getCreateProjectFormStatus(
+  name: string,
+  path: string,
+  language: string,
+  error: string,
+  hasInteracted: boolean,
+): CreateProjectFormStatus {
+  const missingRequired = !name.trim() || !path.trim() || !language
+  return {
+    missingRequired,
+    canCreate: !missingRequired,
+    footerError: error,
+    footerMessageKey: !error && hasInteracted && missingRequired ? "project.requiredHint" : null,
+  }
+}
+
 export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: CreateProjectDialogProps) {
   const { t } = useTranslation()
   const [name, setName] = useState("")
+  const [categoryId, setCategoryId] = useState<KnowledgeCategoryId>("annotation")
+  const [projectKindId, setProjectKindId] = useState<KnowledgeProjectKindId>("language-audio")
+  const [businessContext, setBusinessContext] = useState("")
+  const [sourcePolicy, setSourcePolicy] = useState(DEFAULT_PROJECT_METADATA.sourcePolicy)
   const [selectedTemplate, setSelectedTemplate] = useState("general")
   // Empty string = "user hasn't picked yet"; we validate this on
   // submit so a fresh project never starts in implicit auto-detect
@@ -44,6 +82,12 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
       setError(t("project.errorLanguageRequired"))
       return
     }
+    const metadata: BusinessProjectMetadata = {
+      categoryId,
+      projectKindId,
+      businessContext,
+      sourcePolicy,
+    }
     setCreating(true)
     setError("")
     try {
@@ -54,11 +98,19 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
       const pp = normalizePath(project.path)
 
       const template = getTemplate(selectedTemplate)
-      await writeFile(`${pp}/schema.md`, template.schema)
-      await writeFile(`${pp}/purpose.md`, template.purpose)
+      const platformContext = buildProjectPurposeContext(metadata)
+      const platformSchema = buildProjectSchemaContext(metadata)
+      await writeFile(`${pp}/schema.md`, `${platformSchema}\n\n${template.schema}`)
+      await writeFile(`${pp}/purpose.md`, `${platformContext}\n\n${template.purpose}`)
       for (const dir of template.extraDirs) {
         await createDirectory(`${pp}/${dir}`)
       }
+      const normalizedMetadata = await saveProjectMetadata(pp, metadata)
+      const projectWithMetadata: WikiProject = {
+        ...project,
+        metadata: normalizedMetadata,
+      }
+      await upsertProjectInfo(project.id, project.path, project.name, normalizedMetadata)
 
       // Persist the user's language choice. The store / disk
       // mirror is what the rest of the app reads via
@@ -68,9 +120,13 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
       setOutputLanguage(lang)
       await saveOutputLanguage(lang, project.id)
 
-      onCreated(project)
+      onCreated(projectWithMetadata)
       onOpenChange(false)
       setName("")
+      setCategoryId("annotation")
+      setProjectKindId("language-audio")
+      setBusinessContext("")
+      setSourcePolicy(DEFAULT_PROJECT_METADATA.sourcePolicy)
       setSelectedTemplate("general")
       setLanguage("")
     } catch (err) {
@@ -79,6 +135,14 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
       setCreating(false)
     }
   }
+
+  function handleCategoryChange(nextCategory: KnowledgeCategoryId) {
+    const kinds = getProjectKindsForCategory(nextCategory)
+    setCategoryId(nextCategory)
+    setProjectKindId(kinds[0].id)
+  }
+
+  const projectKinds = getProjectKindsForCategory(categoryId)
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -90,6 +154,59 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
           <div className="flex flex-col gap-2">
             <Label htmlFor="name">{t("project.name")}</Label>
             <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("project.namePlaceholder")} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="knowledge-category">{t("project.knowledgeCategory")}</Label>
+              <select
+                id="knowledge-category"
+                value={categoryId}
+                onChange={(e) => handleCategoryChange(e.target.value as KnowledgeCategoryId)}
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {KNOWLEDGE_CATEGORIES.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {t(category.labelKey)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="project-kind">{t("project.projectKind")}</Label>
+              <select
+                id="project-kind"
+                value={projectKindId}
+                onChange={(e) => setProjectKindId(e.target.value as KnowledgeProjectKindId)}
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {projectKinds.map((kind) => (
+                  <option key={kind.id} value={kind.id}>
+                    {t(kind.labelKey)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="business-context">{t("project.businessContext")}</Label>
+            <textarea
+              id="business-context"
+              value={businessContext}
+              onChange={(e) => setBusinessContext(e.target.value)}
+              placeholder={t("project.businessContextPlaceholder")}
+              rows={3}
+              className="min-h-24 w-full resize-y rounded-md border bg-background px-3 py-2 text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="source-policy">{t("project.sourcePolicy")}</Label>
+            <textarea
+              id="source-policy"
+              value={sourcePolicy}
+              onChange={(e) => setSourcePolicy(e.target.value)}
+              rows={2}
+              className="min-h-20 w-full resize-y rounded-md border bg-background px-3 py-2 text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
           </div>
           <div className="flex flex-col gap-2">
             <Label>{t("project.template")}</Label>

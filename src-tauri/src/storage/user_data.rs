@@ -48,7 +48,11 @@ impl UserData {
         Ok(serde_json::from_slice(&raw)?)
     }
 
-    pub fn save_config(&self, user_id: &str, value: &serde_json::Value) -> Result<(), UserDataError> {
+    pub fn save_config(
+        &self,
+        user_id: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), UserDataError> {
         let path = self.user_dir(user_id)?.join("config.json");
         atomic_write_json(&path, value)
     }
@@ -68,7 +72,11 @@ impl UserData {
         serde_json::from_slice::<Vec<String>>(&raw).unwrap_or_default()
     }
 
-    pub fn add_recently_opened(&self, user_id: &str, project_id: &str) -> Result<(), UserDataError> {
+    pub fn add_recently_opened(
+        &self,
+        user_id: &str,
+        project_id: &str,
+    ) -> Result<(), UserDataError> {
         safe_segment("project_id", project_id)?;
         let path = self.user_dir(user_id)?.join("recently_opened.json");
         let mut current = self.recently_opened(user_id);
@@ -81,12 +89,19 @@ impl UserData {
     fn chat_dir(&self, user_id: &str, project_id: &str) -> Result<PathBuf, UserDataError> {
         safe_segment("user_id", user_id)?;
         safe_segment("project_id", project_id)?;
-        Ok(self.data_root.join("users").join(user_id).join("chat").join(project_id))
+        Ok(self
+            .data_root
+            .join("users")
+            .join(user_id)
+            .join("chat")
+            .join(project_id))
     }
 
-    pub fn list_conversations(&self, user_id: &str, project_id: &str)
-        -> Result<Vec<ConversationMeta>, UserDataError>
-    {
+    pub fn list_conversations(
+        &self,
+        user_id: &str,
+        project_id: &str,
+    ) -> Result<Vec<ConversationMeta>, UserDataError> {
         let dir = self.chat_dir(user_id, project_id)?;
         if !dir.exists() {
             return Ok(vec![]);
@@ -115,20 +130,31 @@ impl UserData {
         Ok(out)
     }
 
-    pub fn load_conversation(&self, user_id: &str, project_id: &str, conv_id: &str)
-        -> Result<serde_json::Value, UserDataError>
-    {
+    pub fn load_conversation(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        conv_id: &str,
+    ) -> Result<serde_json::Value, UserDataError> {
         safe_segment("conversation_id", conv_id)?;
-        let path = self.chat_dir(user_id, project_id)?.join(format!("{conv_id}.json"));
+        let path = self
+            .chat_dir(user_id, project_id)?
+            .join(format!("{conv_id}.json"));
         let raw = fs::read(&path)?;
         Ok(serde_json::from_slice(&raw)?)
     }
 
-    pub fn save_conversation(&self, user_id: &str, project_id: &str, conv_id: &str, value: &serde_json::Value)
-        -> Result<(), UserDataError>
-    {
+    pub fn save_conversation(
+        &self,
+        user_id: &str,
+        project_id: &str,
+        conv_id: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), UserDataError> {
         safe_segment("conversation_id", conv_id)?;
-        let path = self.chat_dir(user_id, project_id)?.join(format!("{conv_id}.json"));
+        let path = self
+            .chat_dir(user_id, project_id)?
+            .join(format!("{conv_id}.json"));
         atomic_write_json(&path, value)
     }
 }
@@ -143,7 +169,9 @@ fn safe_segment(label: &'static str, segment: &str) -> Result<(), UserDataError>
     if segment.is_empty()
         || segment == "."
         || segment == ".."
-        || !segment.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || !segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
         return Err(match label {
             "user_id" => UserDataError::InvalidUserId(segment.into()),
@@ -201,9 +229,16 @@ mod tests {
     fn save_config_is_atomic_no_leftover_tmp() {
         let (dir, ud) = ud();
         ud.save_config("alice", &json!({"x": 1})).unwrap();
-        let entries: Vec<_> = fs::read_dir(dir.path().join("users/alice")).unwrap().collect();
+        let entries: Vec<_> = fs::read_dir(dir.path().join("users/alice"))
+            .unwrap()
+            .collect();
         assert!(!entries.iter().any(|e| {
-            e.as_ref().unwrap().path().extension().map(|x| x == "tmp").unwrap_or(false)
+            e.as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .map(|x| x == "tmp")
+                .unwrap_or(false)
         }));
     }
 
@@ -246,7 +281,8 @@ mod tests {
     #[test]
     fn save_then_list_conversation() {
         let (_dir, ud) = ud();
-        ud.save_conversation("alice", "proj1", "abc", &json!({"messages": []})).unwrap();
+        ud.save_conversation("alice", "proj1", "abc", &json!({"messages": []}))
+            .unwrap();
         let conv = ud.load_conversation("alice", "proj1", "abc").unwrap();
         assert_eq!(conv, json!({"messages": []}));
         let list = ud.list_conversations("alice", "proj1").unwrap();
@@ -257,7 +293,10 @@ mod tests {
     #[test]
     fn list_conversations_for_unused_project_is_empty() {
         let (_dir, ud) = ud();
-        assert!(ud.list_conversations("alice", "untouched").unwrap().is_empty());
+        assert!(ud
+            .list_conversations("alice", "untouched")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

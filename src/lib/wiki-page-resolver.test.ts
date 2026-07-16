@@ -1,9 +1,13 @@
 import { describe, it, expect } from "vitest"
 import type { FileNode } from "@/types/wiki"
 import {
+  buildProjectPathIndexFromTree,
   findInTreeByName,
+  resolveMarkdownPageHref,
   resolveRelatedSlug,
   resolveSourceName,
+  resolveSourceReference,
+  resolveWikiPathFromBrowserPath,
   unwrapWikilink,
 } from "./wiki-page-resolver"
 
@@ -24,8 +28,10 @@ const TREE: FileNode[] = [
   dir(`${PP}/wiki`, [
     dir(`${WIKI}/entities`, [file(`${WIKI}/entities/foo.md`)]),
     dir(`${WIKI}/concepts`, [file(`${WIKI}/concepts/bar.md`)]),
+    dir(`${WIKI}/faq`, [file(`${WIKI}/faq/payroll.md`)]),
     dir(`${WIKI}/queries`, [file(`${WIKI}/queries/what-is-foo.md`)]),
     dir(`${WIKI}/sources`, [file(`${WIKI}/sources/paper.md`)]),
+    dir(`${WIKI}/synthesis`, [file(`${WIKI}/synthesis/map.md`)]),
   ]),
   dir(`${PP}/raw`, [
     dir(`${SOURCES}`, [
@@ -37,6 +43,8 @@ const TREE: FileNode[] = [
     ]),
   ]),
 ]
+
+const INDEX = buildProjectPathIndexFromTree(TREE)
 
 describe("unwrapWikilink", () => {
   it("unwraps a bare [[target]]", () => {
@@ -101,6 +109,11 @@ describe("findInTreeByName", () => {
   it("returns null when nothing matches", () => {
     expect(findInTreeByName(TREE, "missing.md", `${WIKI}/`)).toBeNull()
   })
+
+  it("deduplicates overlapping paths in the project index", () => {
+    const index = buildProjectPathIndexFromTree([...TREE, ...TREE])
+    expect(index.filesByName.get("report.pdf")).toHaveLength(1)
+  })
 })
 
 describe("resolveRelatedSlug", () => {
@@ -147,6 +160,44 @@ describe("resolveRelatedSlug", () => {
   })
 })
 
+describe("resolveMarkdownPageHref", () => {
+  it("resolves markdown links relative to the current wiki file", () => {
+    expect(resolveMarkdownPageHref(TREE, "synthesis/map.md", WIKI, `${WIKI}/index.md`)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+
+  it("resolves parent-directory markdown links", () => {
+    expect(resolveMarkdownPageHref(TREE, "../synthesis/map.md", WIKI, `${WIKI}/faq/payroll.md`)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+
+  it("does not resolve external links", () => {
+    expect(resolveMarkdownPageHref(TREE, "https://example.com/map.md", WIKI, `${WIKI}/index.md`)).toBeNull()
+  })
+})
+
+describe("resolveWikiPathFromBrowserPath", () => {
+  it("resolves direct wiki browser paths", () => {
+    expect(resolveWikiPathFromBrowserPath(TREE, "/synthesis/map.md", WIKI)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+
+  it("recovers from nested browser paths produced by old relative navigations", () => {
+    expect(resolveWikiPathFromBrowserPath(TREE, "/concepts/faq/synthesis/map.md", WIKI)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+
+  it("decodes encoded browser paths", () => {
+    expect(resolveWikiPathFromBrowserPath(TREE, "/synthesis/map%2Emd", WIKI)).toBe(
+      `${WIKI}/synthesis/map.md`,
+    )
+  })
+})
+
 describe("resolveSourceName", () => {
   it("finds a top-level source file", () => {
     expect(resolveSourceName(TREE, "report.pdf", SOURCES)).toBe(
@@ -187,5 +238,27 @@ describe("resolveSourceName", () => {
     expect(resolveSourceName(TREE, "wiki/sources/paper.md", SOURCES)).toBe(
       `${WIKI}/sources/paper.md`,
     )
+  })
+})
+
+describe("resolveSourceReference", () => {
+  it("normalizes HTTP sources and keeps local sources resolvable", () => {
+    expect(resolveSourceReference(INDEX, "https://example.com/source", SOURCES)).toEqual({
+      kind: "external",
+      url: "https://example.com/source",
+    })
+    expect(resolveSourceReference(INDEX, "report.pdf", SOURCES)).toEqual({
+      kind: "local",
+      path: `${SOURCES}/report.pdf`,
+    })
+  })
+
+  it("rejects credential-bearing and non-HTTP URL schemes", () => {
+    expect(resolveSourceReference(INDEX, "https://user:secret@example.com/file", SOURCES)).toEqual({
+      kind: "missing",
+    })
+    expect(resolveSourceReference(INDEX, "javascript:alert(1)", SOURCES)).toEqual({
+      kind: "missing",
+    })
   })
 })

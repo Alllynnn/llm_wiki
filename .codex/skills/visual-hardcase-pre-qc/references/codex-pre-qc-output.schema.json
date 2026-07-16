@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rows", "batchSummary"],
+  "properties": {
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rowNumber",
+          "recommendation",
+          "riskLevel",
+          "score",
+          "blockers",
+          "issues",
+          "suggestions",
+          "badCaseCategory",
+          "evidence",
+          "humanReview",
+          "reasoningSummary"
+        ],
+        "properties": {
+          "rowNumber": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "recommendation": {
+            "type": "string",
+            "enum": ["通过", "退回修改", "拒收", "待复核"]
+          },
+          "riskLevel": {
+            "type": "string",
+            "enum": ["低", "中", "高", "阻断"]
+          },
+          "score": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "blockers": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "issues": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "suggestions": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "badCaseCategory": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "humanReview": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "reasoningSummary": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "batchSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "pass", "rework", "reject", "manualReview", "commonIssues"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "pass": { "type": "integer", "minimum": 0 },
+        "rework": { "type": "integer", "minimum": 0 },
+        "reject": { "type": "integer", "minimum": 0 },
+        "manualReview": { "type": "integer", "minimum": 0 },
+        "commonIssues": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -9,6 +9,8 @@ import {
   Trash2,
   RotateCcw,
   Clock,
+  Archive,
+  ListRestart,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -52,6 +54,28 @@ export function MaintenanceSection() {
   const [scanError, setScanError] = useState<string | null>(null)
   const [groups, setGroups] = useState<GroupUiEntry[]>([])
   const [scanCompleted, setScanCompleted] = useState(false)
+  const [projectToolStatus, setProjectToolStatus] = useState<string | null>(null)
+  const projectToolBusy = false
+
+  const handleRebuildIndex = useCallback(async () => {
+    if (!project) return
+    setProjectToolStatus(t("settings.sections.maintenance.projectData.browserUnavailable", {
+      defaultValue: "This desktop-only maintenance action is not available in the browser build.",
+    }))
+  }, [project, t])
+
+  const handleExportProject = useCallback(async () => {
+    if (!project) return
+    setProjectToolStatus(t("settings.sections.maintenance.projectData.browserUnavailable", {
+      defaultValue: "This desktop-only maintenance action is not available in the browser build.",
+    }))
+  }, [project, t])
+
+  const handleImportProject = useCallback(async () => {
+    setProjectToolStatus(t("settings.sections.maintenance.projectData.browserUnavailable", {
+      defaultValue: "This desktop-only maintenance action is not available in the browser build.",
+    }))
+  }, [t])
 
   // Poll the queue at 1Hz so the UI reflects pending → processing →
   // failed transitions and cross-window queue activity (e.g. a merge
@@ -205,6 +229,17 @@ export function MaintenanceSection() {
               "Tools for cleaning up the wiki — detect and merge duplicate entities/concepts that the LLM created under different names across re-ingests.",
           })}
         </p>
+      </div>
+
+      <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-4">
+        <div className="flex items-center gap-2"><ListRestart className="h-4 w-4 text-muted-foreground" /><h3 className="text-sm font-semibold">{t("settings.sections.maintenance.projectData.title")}</h3></div>
+        <p className="text-xs text-muted-foreground">{t("settings.sections.maintenance.projectData.description")}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => void handleRebuildIndex()} disabled={!project || projectToolBusy}>{t("settings.sections.maintenance.projectData.rebuild")}</Button>
+          <Button variant="outline" onClick={() => void handleExportProject()} disabled={!project || projectToolBusy}><Archive className="h-4 w-4" />{t("settings.sections.maintenance.projectData.export")}</Button>
+          <Button variant="outline" onClick={() => void handleImportProject()} disabled={projectToolBusy}>{t("settings.sections.maintenance.projectData.import")}</Button>
+        </div>
+        {projectToolStatus && <p className="text-xs text-muted-foreground">{projectToolStatus}</p>}
       </div>
 
       <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-4">

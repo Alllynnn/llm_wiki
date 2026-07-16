@@ -635,7 +635,10 @@ pub async fn vector_search_chunks(
 
 /// Delete every chunk belonging to a page. Used when a source document
 /// is removed, or before a full re-embed of a page whose content shrank.
-pub async fn vector_delete_page(project_path: String, page_id: String) -> Result<(), VectorstoreError> {
+pub async fn vector_delete_page(
+    project_path: String,
+    page_id: String,
+) -> Result<(), VectorstoreError> {
     run_guarded_async("vector_delete_page", async move {
         validate_page_id_for_v2(&page_id).map_err(|e| e.to_string())?;
 
@@ -1052,7 +1055,11 @@ mod tests_v2 {
         ];
         let result = vector_upsert_chunks(pp, "page-a".into(), bad).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().to_lowercase().contains("dim"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .to_lowercase()
+            .contains("dim"));
     }
 
     #[tokio::test]

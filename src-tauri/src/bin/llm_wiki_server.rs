@@ -73,8 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let main_app = main_router(state.clone());
-    let main_serve = axum::serve(main_listener, main_app)
-        .with_graceful_shutdown(shutdown_signal());
+    let main_serve = axum::serve(main_listener, main_app).with_graceful_shutdown(shutdown_signal());
 
     // Legacy 127.0.0.1:19828 (no auth) — opt-out via config.
     if config.legacy_19828_enabled {
@@ -82,8 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let legacy_app = legacy_router(state.clone());
         let legacy_listener = tokio::net::TcpListener::bind(&legacy_addr).await?;
         eprintln!("legacy listener on http://{legacy_addr}");
-        let legacy_serve = axum::serve(legacy_listener, legacy_app)
-            .with_graceful_shutdown(shutdown_signal());
+        let legacy_serve =
+            axum::serve(legacy_listener, legacy_app).with_graceful_shutdown(shutdown_signal());
         let (a, b) = tokio::join!(main_serve, legacy_serve);
         a?;
         b?;
