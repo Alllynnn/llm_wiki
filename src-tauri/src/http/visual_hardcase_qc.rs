@@ -312,10 +312,16 @@ mod tests {
     use super::*;
     use std::env;
     use std::fs;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     struct EnvGuard {
         cwd: PathBuf,
@@ -373,9 +379,20 @@ mod tests {
         path
     }
 
+    fn assert_same_script(actual: Option<PathBuf>, expected: &Path) {
+        let actual = actual
+            .expect("worker script")
+            .canonicalize()
+            .expect("canonicalize actual script");
+        let expected = expected
+            .canonicalize()
+            .expect("canonicalize expected script");
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn worker_script_defaults_to_model_worker() {
-        let _lock = ENV_LOCK.lock().expect("env lock");
+        let _lock = lock_env();
         let guard = EnvGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         env::remove_var("VISUAL_HARDCASE_QC_WORKER_SCRIPT");
@@ -384,13 +401,13 @@ mod tests {
         let model = make_script(tmp.path(), "codex_model_pre_qc.py");
         env::set_current_dir(tmp.path()).expect("set cwd");
 
-        assert_eq!(worker_script(), Some(model));
+        assert_same_script(worker_script(), &model);
         drop(guard);
     }
 
     #[test]
     fn worker_script_ignores_watcher_override_outside_legacy_mode() {
-        let _lock = ENV_LOCK.lock().expect("env lock");
+        let _lock = lock_env();
         let guard = EnvGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         env::remove_var("VISUAL_HARDCASE_QC_WORKER_SCRIPT");
@@ -400,13 +417,13 @@ mod tests {
         env::set_var("VISUAL_HARDCASE_QC_WATCHER_SCRIPT", watcher);
         env::set_current_dir(tmp.path()).expect("set cwd");
 
-        assert_eq!(worker_script(), Some(model));
+        assert_same_script(worker_script(), &model);
         drop(guard);
     }
 
     #[test]
     fn worker_script_allows_watcher_in_legacy_mode() {
-        let _lock = ENV_LOCK.lock().expect("env lock");
+        let _lock = lock_env();
         let guard = EnvGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         env::remove_var("VISUAL_HARDCASE_QC_WORKER_SCRIPT");
@@ -415,13 +432,13 @@ mod tests {
         env::set_var("VISUAL_HARDCASE_QC_WORKER_MODE", "legacy-rules");
         env::set_current_dir(tmp.path()).expect("set cwd");
 
-        assert_eq!(worker_script(), Some(watcher));
+        assert_same_script(worker_script(), &watcher);
         drop(guard);
     }
 
     #[test]
     fn worker_script_ignores_worker_script_watcher_without_legacy_mode() {
-        let _lock = ENV_LOCK.lock().expect("env lock");
+        let _lock = lock_env();
         let guard = EnvGuard::new();
         let tmp = TempDir::new().expect("temp dir");
         env::remove_var("VISUAL_HARDCASE_QC_WATCHER_SCRIPT");
@@ -431,7 +448,7 @@ mod tests {
         env::set_var("VISUAL_HARDCASE_QC_WORKER_SCRIPT", watcher);
         env::set_current_dir(tmp.path()).expect("set cwd");
 
-        assert_eq!(worker_script(), Some(model));
+        assert_same_script(worker_script(), &model);
         drop(guard);
     }
 }

@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "test": "npm run test:mocks && npm run test:llm",
     "test:mocks": "vitest run --exclude='**/*.real-llm.test.ts' --exclude='**/mcp-server/**' --exclude='.agents/**' --exclude='.github/**'",
-    "test:automation": "node --test .github/scripts/*.test.cjs",
+    "test:automation": "node --test .github/scripts/automation-gate.test.cjs .github/scripts/upstream-watch.test.cjs",
     "test:llm": "vitest run real-llm --no-file-parallelism --reporter=verbose",
     "mcp:build": "npm --prefix mcp-server run build",
     "mcp:test": "npm --prefix mcp-server test",
