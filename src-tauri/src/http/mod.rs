@@ -1430,50 +1430,13 @@ mod tests {
         assert_eq!(v["error"]["code"], "PATH_ESCAPE");
     }
 
-    /// Like `build_state_with_user`, but points `projects_root` at a real
-    /// directory inside the temp dir so `/fs/*` writes land somewhere safe.
-    fn build_state_with_user_and_projects_root(
-        username: &str,
-        password: &str,
-    ) -> (TempDir, AppState) {
-        let (dir, mut state) = build_state_with_user(username, password);
-        let root = dir.path().join("projects");
-        std::fs::create_dir_all(&root).unwrap();
-        let mut cfg = (*state.config).clone();
-        cfg.projects_root = root;
-        state.config = Arc::new(cfg);
-        (dir, state)
-    }
-
-    async fn login_cookie(app: &Router, username: &str, password: &str) -> String {
-        let body = format!(r#"{{"username":"{username}","password":"{password}"}}"#);
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/auth/login")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-        extract_set_cookie(&resp)
-            .split(';')
-            .next()
-            .unwrap()
-            .to_string()
-    }
-
     /// Regression test for the 2 MiB `DefaultBodyLimit` that axum applies when
     /// a router doesn't set one. `/fs/write` must accept bodies well past it.
     #[tokio::test]
     async fn fs_write_accepts_body_over_axum_default_2mib_limit() {
-        let (dir, state) = build_state_with_user_and_projects_root("alice", "pw");
+        let (_dir, state, projects_root) = build_state_with_real_projects_root("alice", "pw");
         let app = main_router(state);
-        let cookie = login_cookie(&app, "alice", "pw").await;
+        let cookie = login(app.clone(), "alice", "pw").await;
 
         // 3 MiB of content — comfortably over axum's 2 MiB default, and small
         // enough to keep the test fast.
@@ -1501,9 +1464,7 @@ mod tests {
         );
         assert_eq!(resp.status(), 204);
         assert_eq!(
-            std::fs::metadata(dir.path().join("projects/big.txt"))
-                .unwrap()
-                .len(),
+            std::fs::metadata(projects_root.join("big.txt")).unwrap().len(),
             3 * 1024 * 1024
         );
     }
