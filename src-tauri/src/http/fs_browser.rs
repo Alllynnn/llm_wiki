@@ -1,6 +1,6 @@
 //! HTTP handlers for browsing the server-side projects-root directory tree.
 
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -11,6 +11,25 @@ use crate::http::error::ApiError;
 use crate::http::AppState;
 use crate::storage::paths::resolve_project_path;
 
+/// Maximum accepted request body for the `/api/v1/fs/*` routes.
+///
+/// axum's default is 2 MiB, which is far too small for two real callers:
+///   - `/fs/write` — large wiki page writes.
+///   - `/fs/write_base64` — original-PDF archival, which base64-encodes the
+///     file and so inflates it by 4/3 before it hits this endpoint.
+///
+/// 96 MiB accommodates a ~72 MiB source file after base64 inflation.
+///
+/// This does NOT cover the largest file the frontend will theoretically try to
+/// archive: `mineru.ts` guards accurate-parse at 200 MiB, which would encode to
+/// ~267 MiB. Sizing for that is deliberately out of scope here, because these
+/// handlers buffer the entire body in memory via the `Json` extractor — a
+/// request that large would need several hundred MiB of resident memory and
+/// would be an OOM risk on a small server. Raising the ceiling further should
+/// come with streaming/multipart upload rather than a bigger buffer, so this is
+/// a finite number rather than `DefaultBodyLimit::disable()`.
+const FS_BODY_LIMIT: usize = 96 * 1024 * 1024;
+
 pub fn fs_browser_router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/fs/list", get(list))
@@ -19,6 +38,9 @@ pub fn fs_browser_router() -> Router<AppState> {
         .route("/api/v1/fs/write_base64", post(write_base64))
         .route("/api/v1/fs/exists", get(exists))
         .route("/api/v1/fs/file", delete(delete_file))
+        // Applied inside this router so it is scoped to the /fs/* routes only
+        // and survives the `.merge()` into the main router.
+        .layer(DefaultBodyLimit::max(FS_BODY_LIMIT))
 }
 
 #[derive(Debug, Deserialize)]

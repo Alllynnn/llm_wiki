@@ -1429,4 +1429,107 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"]["code"], "PATH_ESCAPE");
     }
+
+    /// Like `build_state_with_user`, but points `projects_root` at a real
+    /// directory inside the temp dir so `/fs/*` writes land somewhere safe.
+    fn build_state_with_user_and_projects_root(
+        username: &str,
+        password: &str,
+    ) -> (TempDir, AppState) {
+        let (dir, mut state) = build_state_with_user(username, password);
+        let root = dir.path().join("projects");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut cfg = (*state.config).clone();
+        cfg.projects_root = root;
+        state.config = Arc::new(cfg);
+        (dir, state)
+    }
+
+    async fn login_cookie(app: &Router, username: &str, password: &str) -> String {
+        let body = format!(r#"{{"username":"{username}","password":"{password}"}}"#);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        extract_set_cookie(&resp)
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Regression test for the 2 MiB `DefaultBodyLimit` that axum applies when
+    /// a router doesn't set one. `/fs/write` must accept bodies well past it.
+    #[tokio::test]
+    async fn fs_write_accepts_body_over_axum_default_2mib_limit() {
+        let (dir, state) = build_state_with_user_and_projects_root("alice", "pw");
+        let app = main_router(state);
+        let cookie = login_cookie(&app, "alice", "pw").await;
+
+        // 3 MiB of content — comfortably over axum's 2 MiB default, and small
+        // enough to keep the test fast.
+        let content = "x".repeat(3 * 1024 * 1024);
+        let payload = serde_json::json!({ "path": "big.txt", "content": content }).to_string();
+        assert!(payload.len() > 2 * 1024 * 1024, "payload must exceed the old limit");
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/fs/write")
+                    .header("content-type", "application/json")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            resp.status(),
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            "fs router must not be capped at axum's 2 MiB default"
+        );
+        assert_eq!(resp.status(), 204);
+        assert_eq!(
+            std::fs::metadata(dir.path().join("projects/big.txt"))
+                .unwrap()
+                .len(),
+            3 * 1024 * 1024
+        );
+    }
+
+    /// The raised limit is scoped to `/fs/*`; every other route keeps axum's
+    /// 2 MiB default. Guards against the layer leaking to the whole router.
+    #[tokio::test]
+    async fn non_fs_routes_keep_the_default_body_limit() {
+        let (_dir, state) = build_state_with_user("alice", "pw");
+        let app = main_router(state);
+
+        let payload =
+            serde_json::json!({ "username": "alice", "password": "x".repeat(3 * 1024 * 1024) })
+                .to_string();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }
