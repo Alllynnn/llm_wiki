@@ -219,9 +219,116 @@ describe("runSemanticLint — activity & early returns", () => {
     const items = useActivityStore.getState().items
     expect(items[0].status).toBe("error")
   })
+
+  it("marks the activity done when cancelled while reading pages", async () => {
+    mockListDirectory.mockResolvedValue([makeFileNode("a.md", "content").node])
+    const controller = new AbortController()
+    mockReadFile.mockImplementation(async () => {
+      controller.abort()
+      return "content"
+    })
+
+    await expect(runSemanticLint("/project", fakeLlmConfig(), controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" })
+
+    expect(mockStreamChat).not.toHaveBeenCalled()
+    expect(useActivityStore.getState().items[0]).toMatchObject({
+      status: "done",
+      detail: "Semantic lint cancelled.",
+    })
+  })
+
+  it("marks the activity done when cancelled during streaming", async () => {
+    mockListDirectory.mockResolvedValue([makeFileNode("a.md", "content").node])
+    mockReadFile.mockResolvedValue("content")
+    const controller = new AbortController()
+    mockStreamChat.mockImplementation(async () => {
+      controller.abort()
+      throw new DOMException("Semantic lint cancelled", "AbortError")
+    })
+
+    await expect(runSemanticLint("/project", fakeLlmConfig(), controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" })
+
+    expect(useActivityStore.getState().items[0]).toMatchObject({
+      status: "done",
+      detail: "Semantic lint cancelled.",
+    })
+  })
+
+  it("rethrows filesystem AbortError and marks the activity done", async () => {
+    mockListDirectory.mockRejectedValue(new DOMException("cancelled", "AbortError"))
+
+    await expect(runSemanticLint("/project", fakeLlmConfig()))
+      .rejects.toMatchObject({ name: "AbortError" })
+
+    expect(useActivityStore.getState().items[0]).toMatchObject({
+      status: "done",
+      detail: "Semantic lint cancelled.",
+    })
+  })
+
+  it("does not swallow AbortError from a page read", async () => {
+    mockListDirectory.mockResolvedValue([makeFileNode("a.md", "content").node])
+    mockReadFile.mockRejectedValue(new DOMException("cancelled", "AbortError"))
+
+    await expect(runSemanticLint("/project", fakeLlmConfig()))
+      .rejects.toMatchObject({ name: "AbortError" })
+
+    expect(mockStreamChat).not.toHaveBeenCalled()
+    expect(useActivityStore.getState().items[0].status).toBe("done")
+  })
+
+  it("preserves a real streaming error even when abort races with it", async () => {
+    mockListDirectory.mockResolvedValue([makeFileNode("a.md", "content").node])
+    mockReadFile.mockResolvedValue("content")
+    const controller = new AbortController()
+    mockStreamChat.mockImplementation(async () => {
+      controller.abort()
+      throw new Error("provider failed")
+    })
+
+    await expect(runSemanticLint("/project", fakeLlmConfig(), controller.signal))
+      .rejects.toThrow("provider failed")
+
+    expect(useActivityStore.getState().items[0]).toMatchObject({
+      status: "error",
+      detail: "Semantic lint failed: provider failed",
+    })
+  })
+
+  it("preserves callback streaming errors when abort happens before resolve", async () => {
+    mockListDirectory.mockResolvedValue([makeFileNode("a.md", "content").node])
+    mockReadFile.mockResolvedValue("content")
+    const controller = new AbortController()
+    mockStreamChat.mockImplementation(async (_config, _messages, callbacks) => {
+      callbacks.onError(new Error("provider failed"))
+      controller.abort()
+    })
+
+    await expect(runSemanticLint("/project", fakeLlmConfig(), controller.signal))
+      .resolves.toEqual([])
+
+    expect(useActivityStore.getState().items[0]).toMatchObject({
+      status: "error",
+      detail: "LLM error: provider failed",
+    })
+  })
 })
 
 describe("runStructuralLint — link suggestions", () => {
+  it("stops before reading pages when cancellation is already requested", async () => {
+    const pages = [makeFileNode("a.md", "# A")]
+    mockListDirectory.mockResolvedValue(pages.map((entry) => entry.node))
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(runStructuralLint("/project", { signal: controller.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    expect(mockReadFile).not.toHaveBeenCalled()
+  })
+
   it("suggests the closest existing page for a broken wikilink", async () => {
     const pages = [
       makeFileNode("transformer.md", "---\ntitle: Transformer\n---\n# Transformer\nAttention model."),
