@@ -312,6 +312,33 @@ fn read_cache(original: &Path) -> Option<String> {
     }
 }
 
+/// Return a fresh preprocessing cache without triggering extraction.
+///
+/// Source search uses this for binary documents so a read-only query never
+/// parses or rewrites user files, and never quotes stale extracted text.
+pub(crate) fn read_preprocessed_cache(original: &Path, max_bytes: u64) -> Option<String> {
+    let cache_path = cache_path_for(original);
+    let original_modified = fs::metadata(original).ok()?.modified().ok()?;
+    let cache_modified = fs::metadata(&cache_path).ok()?.modified().ok()?;
+    (cache_modified >= original_modified)
+        .then(|| read_utf8_file_limited(&cache_path, max_bytes))?
+}
+
+/// Read at most `max_bytes` from one open handle and reject files that have
+/// more data. Reading `max + 1` makes the limit hold even when a file grows
+/// concurrently after it was discovered by the directory walk.
+pub(crate) fn read_utf8_file_limited(path: &Path, max_bytes: u64) -> Option<String> {
+    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024) as usize);
+    let file = fs::File::open(path).ok()?;
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > max_bytes {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 pub(crate) fn write_cache(original: &Path, text: &str) -> Result<(), String> {
     let cache_path = cache_path_for(original);
     if let Some(parent) = cache_path.parent() {
@@ -1338,6 +1365,22 @@ pub async fn get_file_md5(path: String) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn limited_utf8_reader_enforces_the_actual_byte_count() {
+        let path = std::env::temp_dir().join(format!(
+            "llm-wiki-limited-read-{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, b"12345").unwrap();
+
+        assert_eq!(read_utf8_file_limited(&path, 5).as_deref(), Some("12345"));
+        assert_eq!(read_utf8_file_limited(&path, 4), None);
+        let _ = fs::remove_file(path);
+    }
 
     /// Write `bytes` to a fresh tmp path with `.pdf` suffix and return
     /// the path (the OS tmpdir is NOT cleaned up — acceptable for tests).

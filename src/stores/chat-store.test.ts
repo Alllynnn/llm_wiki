@@ -29,6 +29,26 @@ describe("chat-store conversation isolation", () => {
     expect(useChatStore.getState().retrievalMode).toBe("faithful")
   })
 
+  it("records the retrieval policy on user messages for regeneration", () => {
+    const conversationId = useChatStore.getState().createConversation()
+    useChatStore.getState().addMessage(
+      "user",
+      "quote the source",
+      undefined,
+      { retrievalMode: "faithful", useWebSearch: false, useAnyTxtSearch: false },
+    )
+
+    expect(useChatStore.getState().messages).toEqual([
+      expect.objectContaining({
+        conversationId,
+        content: "quote the source",
+        retrievalMode: "faithful",
+        useWebSearch: false,
+        useAnyTxtSearch: false,
+      }),
+    ])
+  })
+
   it("writes async assistant results back to the original conversation", () => {
     const store = useChatStore.getState()
     const first = store.createConversation()

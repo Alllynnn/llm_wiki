@@ -46,6 +46,15 @@ export interface DisplayMessage {
   userInputRequest?: ChatUserInputRequest  // dynamic schema-driven form requested by backend Agent
   images?: MessageImage[]  // images attached to a user message (vision input)
   contextFiles?: string[]  // absolute project files explicitly attached to this user turn
+  retrievalMode?: ChatRetrievalMode  // retrieval policy used for this user turn (needed by regenerate)
+  useWebSearch?: boolean
+  useAnyTxtSearch?: boolean
+}
+
+export interface MessageRetrievalOptions {
+  retrievalMode: ChatRetrievalMode
+  useWebSearch: boolean
+  useAnyTxtSearch: boolean
 }
 
 interface ChatState {
@@ -72,8 +81,8 @@ interface ChatState {
   renameConversation: (id: string, title: string) => void
 
   // Message management
-  addMessage: (role: DisplayMessage["role"], content: string, images?: MessageImage[]) => void
-  addMessageToConversation: (conversationId: string, role: DisplayMessage["role"], content: string, images?: MessageImage[], contextFiles?: string[]) => void
+  addMessage: (role: DisplayMessage["role"], content: string, images?: MessageImage[], retrievalOptions?: MessageRetrievalOptions) => void
+  addMessageToConversation: (conversationId: string, role: DisplayMessage["role"], content: string, images?: MessageImage[], contextFiles?: string[], retrievalOptions?: MessageRetrievalOptions) => void
   setMessages: (messages: DisplayMessage[]) => void
   setConversations: (conversations: Conversation[]) => void
   setStreaming: (streaming: boolean) => void
@@ -178,13 +187,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     })),
 
-  addMessage: (role, content, images) => {
+  addMessage: (role, content, images, retrievalOptions) => {
     const activeConversationId = get().activeConversationId
     if (!activeConversationId) return
-    get().addMessageToConversation(activeConversationId, role, content, images)
+    get().addMessageToConversation(activeConversationId, role, content, images, undefined, retrievalOptions)
   },
 
-  addMessageToConversation: (conversationId, role, content, images, contextFiles) =>
+  addMessageToConversation: (conversationId, role, content, images, contextFiles, retrievalOptions) =>
     set((state) => {
       const { conversations } = state
       if (!conversations.some((conversation) => conversation.id === conversationId)) return state
@@ -197,6 +206,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversationId,
         ...(images && images.length > 0 ? { images } : {}),
         ...(contextFiles && contextFiles.length > 0 ? { contextFiles } : {}),
+        ...(role === "user" && retrievalOptions ? retrievalOptions : {}),
       }
 
       // Auto-set title from first user message (first 50 chars)

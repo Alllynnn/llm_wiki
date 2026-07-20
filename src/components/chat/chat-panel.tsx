@@ -18,6 +18,7 @@ import { isGreeting } from "@/lib/greeting-detector"
 import { computeContextBudget } from "@/lib/context-budget"
 import { anyTxtSearchSmart, hasConfiguredAnyTxt } from "@/lib/anytxt-search"
 import { resolveSearchConfig, webSearch, type WebSearchResult } from "@/lib/web-search"
+import { searchFaithfulSources } from "@/lib/faithful-source-search"
 
 // Store the page mapping from the last query so SourceFilesBar can show which pages were cited
 export let lastQueryPages: { title: string; path: string }[] = []
@@ -150,6 +151,8 @@ export function ChatPanel() {
   const createConversation = useChatStore((s) => s.createConversation)
   const removeLastAssistantMessage = useChatStore((s) => s.removeLastAssistantMessage)
   const maxHistoryMessages = useChatStore((s) => s.maxHistoryMessages)
+  const retrievalMode = useChatStore((s) => s.retrievalMode)
+  const setRetrievalMode = useChatStore((s) => s.setRetrievalMode)
 
   // Derive active messages via selector to re-render on message changes
   const allMessages = useChatStore((s) => s.messages)
@@ -180,7 +183,11 @@ export function ChatPanel() {
     async (
       text: string,
       images: MessageImage[] = [],
-      options: ChatSendOptions = { useWebSearch: false, useAnyTxtSearch: false },
+      options: ChatSendOptions = {
+        useWebSearch: false,
+        useAnyTxtSearch: false,
+        retrievalMode: "standard",
+      },
     ) => {
       // Auto-create a conversation if none is active
       let convId = useChatStore.getState().activeConversationId
@@ -188,7 +195,10 @@ export function ChatPanel() {
         convId = createConversation()
       }
 
-      addMessage("user", text, images)
+      const effectiveImages = options.retrievalMode === "faithful" ? [] : images
+      addMessage("user", text, effectiveImages, options)
+      const controller = new AbortController()
+      abortRef.current = controller
       setStreaming(true)
 
       // Build system prompt with wiki context using graph-enhanced retrieval
@@ -200,7 +210,7 @@ export function ChatPanel() {
       // wiki pages the user clearly didn't ask about. Short-circuit with a
       // minimal system prompt and let the model reply conversationally.
       const greetingOnly = isGreeting(text)
-      if (project && greetingOnly) {
+      if (project && greetingOnly && options.retrievalMode !== "faithful") {
         const outLang = getOutputLanguage(text)
         systemMessages.push({
           role: "system",
@@ -215,7 +225,6 @@ export function ChatPanel() {
         // Skip retrieval; queryRefs stays empty so no "Sources" chip is shown.
       } else if (project) {
         const pp = normalizePath(project.path)
-        const dataVersion = useWikiStore.getState().dataVersion
 
         // ── Budget allocation (see context-budget.ts) ─────────
         // Page budget scales with the LLM's context window; we now
@@ -226,6 +235,78 @@ export function ChatPanel() {
           pageBudget: PAGE_BUDGET,
           maxPageSize: MAX_PAGE_SIZE,
         } = computeContextBudget(llmConfig.maxContextSize)
+
+        if (options.retrievalMode === "faithful") {
+          let sourceResults: Awaited<ReturnType<typeof searchFaithfulSources>>
+          try {
+            sourceResults = await searchFaithfulSources(pp, text, 12, controller.signal)
+          } catch (error) {
+            if (controller.signal.aborted) {
+              setStreaming(false)
+              abortRef.current = null
+              return
+            }
+            const message = error instanceof Error ? error.message : String(error)
+            finalizeStream(`Error: Failed to search original sources: ${message}`, undefined)
+            abortRef.current = null
+            return
+          }
+          if (controller.signal.aborted) {
+            setStreaming(false)
+            abortRef.current = null
+            return
+          }
+          let usedChars = 0
+          const sourcePages = sourceResults.flatMap((result) => {
+            if (!result.content || usedChars >= PAGE_BUDGET) return []
+            const remaining = PAGE_BUDGET - usedChars
+            const content = result.content.slice(0, Math.min(MAX_PAGE_SIZE, remaining))
+            if (!content.trim()) return []
+            usedChars += content.length
+            return [{
+              title: result.title,
+              path: getRelativePath(result.path, pp),
+              content,
+              snippet: result.snippet,
+            }]
+          })
+          const sourcesContext = sourcePages.length > 0
+            ? sourcePages.map((source, index) => [
+                `### [${index + 1}] ${source.title}`,
+                `Path: ${source.path}`,
+                "",
+                source.content,
+              ].join("\n")).join("\n\n---\n\n")
+            : "(No matching original source excerpts were found.)"
+          const outLang = getOutputLanguage(text)
+
+          systemMessages.push({
+            role: "system",
+            content: [
+              `You are a source-faithful assistant for the project "${project.name}".`,
+              "Answer only from the original source excerpts below.",
+              "Do not use generated wiki pages, graph context, web results, AnyTXT results, conversation background knowledge, or unsupported inference as evidence.",
+              "Cite the source number beside every factual claim and preserve quoted wording exactly.",
+              "If the excerpts are insufficient, state that limitation instead of reconstructing or guessing.",
+              "Use markdown formatting for clarity.",
+              "",
+              `## Original Source Excerpts\n\n${sourcesContext}`,
+              "",
+              `## ⚠️ MANDATORY OUTPUT LANGUAGE: ${outLang}`,
+              `Write the entire response in ${outLang}; source language does not override this instruction.`,
+            ].join("\n"),
+          })
+          langReminder = buildLanguageReminder(text)
+          lastQueryPages = sourcePages.map(({ title, path }) => ({ title, path }))
+          queryRefs = sourcePages.map((source) => ({
+            title: source.title,
+            path: source.path,
+            kind: "wiki" as const,
+            source: "Raw Source",
+            snippet: source.snippet,
+          }))
+        } else {
+          const dataVersion = useWikiStore.getState().dataVersion
 
         const [rawIndex, purpose] = await Promise.all([
           readFile(`${pp}/wiki/index.md`).catch(() => ""),
@@ -428,6 +509,7 @@ export function ChatPanel() {
           snippet: result.snippet,
         }))
         queryRefs = [...lastQueryPages.map((page) => ({ ...page, kind: "wiki" as const })), ...externalRefs]
+        }
       }
 
       // ── Conversation history with count limit ────────────────
@@ -444,7 +526,9 @@ export function ChatPanel() {
       // "System message must be at the beginning." (HTTP 400). OpenAI and
       // Anthropic are more lenient, but keeping a single system at the top
       // is the safest shape across every OpenAI-compatible backend.
-      const historyMessages = chatMessagesToLLM(activeConvMessages)
+      const historyMessages: LLMMessage[] = options.retrievalMode === "faithful"
+        ? [{ role: "user", content: text }]
+        : chatMessagesToLLM(activeConvMessages)
       let llmMessages: LLMMessage[] = [...systemMessages, ...historyMessages]
       if (langReminder && historyMessages.length > 0) {
         const lastIdx = llmMessages.length - 1
@@ -478,9 +562,6 @@ export function ChatPanel() {
           ]
         }
       }
-
-      const controller = new AbortController()
-      abortRef.current = controller
 
       let accumulated = ""
       let thinkingOpen = false
@@ -533,7 +614,8 @@ export function ChatPanel() {
   const handleStop = useCallback(() => {
     abortRef.current?.abort()
     abortRef.current = null
-  }, [])
+    setStreaming(false)
+  }, [setStreaming])
 
   const handleRegenerate = useCallback(async () => {
     if (isStreaming) return
@@ -557,9 +639,18 @@ export function ChatPanel() {
         messages: s.messages.filter((m) => m.id !== lastUser.id),
       }))
     }
-    // Re-send with the original text AND images so a regenerated turn
-    // keeps the same vision context.
-    handleSend(lastUserMsg.content, lastUserMsg.images ?? [])
+    const originalOptions: ChatSendOptions = {
+      retrievalMode: lastUserMsg.retrievalMode ?? "standard",
+      useWebSearch: lastUserMsg.useWebSearch ?? false,
+      useAnyTxtSearch: lastUserMsg.useAnyTxtSearch ?? false,
+    }
+    // Re-send with the original retrieval policy. Faithful turns remain
+    // text-only; other modes retain their original vision context.
+    handleSend(
+      lastUserMsg.content,
+      originalOptions.retrievalMode === "faithful" ? [] : (lastUserMsg.images ?? []),
+      originalOptions,
+    )
   }, [isStreaming, removeLastAssistantMessage, handleSend])
 
   const handleWriteToWiki = useCallback(async () => {
@@ -639,6 +730,8 @@ export function ChatPanel() {
           onSend={handleSend}
           onStop={handleStop}
           isStreaming={isStreaming}
+          retrievalMode={retrievalMode}
+          onRetrievalModeChange={setRetrievalMode}
           anyTxtAvailable={anyTxtAvailable}
           imageInputAvailable={imageInputAvailable}
           placeholder={

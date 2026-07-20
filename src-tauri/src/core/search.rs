@@ -46,6 +46,7 @@ const CONTENT_TOKEN_WEIGHT: f64 = 1.0;
 const SNIPPET_CONTEXT: usize = 80;
 const SEARCH_EMBEDDING_TIMEOUT_SECS: u64 = 8;
 const MAX_SEARCH_FILES: usize = 10_000;
+const MAX_SOURCE_SEARCH_BYTES: u64 = 2 * 1024 * 1024;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public data types
@@ -125,6 +126,147 @@ pub async fn search_project(
     })
     .await
     .map_err(|e| SearchError::Internal(e))
+}
+
+/// Search original files under `raw/sources` without using generated wiki,
+/// graph, vector, or external evidence. Binary documents participate only
+/// when a fresh preprocessing cache already exists.
+pub async fn search_sources(
+    project_path: String,
+    query: String,
+    top_k: Option<usize>,
+    include_content: Option<bool>,
+) -> Result<ProjectSearchResponse, SearchError> {
+    tokio::task::spawn_blocking(move || {
+        crate::panic_guard::run_guarded("search_sources", || {
+            search_sources_inner(
+                project_path,
+                query,
+                top_k.unwrap_or(DEFAULT_RESULTS),
+                include_content.unwrap_or(false),
+            )
+        })
+    })
+    .await
+    .map_err(|error| SearchError::Internal(format!("search_sources task failed: {error}")))?
+    .map_err(SearchError::Internal)
+}
+
+fn search_sources_inner(
+    project_path: String,
+    query: String,
+    top_k: usize,
+    include_content: bool,
+) -> Result<ProjectSearchResponse, String> {
+    if query.trim().is_empty() {
+        return Err("query is required".to_string());
+    }
+    let limit = top_k.clamp(1, MAX_RESULTS);
+    let tokens = tokenize_query(&query);
+    let effective_tokens = if tokens.is_empty() {
+        vec![query.trim().to_lowercase()]
+    } else {
+        tokens
+    };
+    let query_phrase = trim_query_punctuation(&query.to_lowercase());
+    let source_root = Path::new(&project_path).join("raw").join("sources");
+    let mut results = Vec::new();
+    let mut searched_files = 0usize;
+
+    if source_root.exists() {
+        for entry in WalkDir::new(&source_root).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() || source_path_is_hidden(&source_root, entry.path()) {
+                continue;
+            }
+            searched_files += 1;
+            if searched_files > MAX_SEARCH_FILES {
+                eprintln!(
+                    "[Search] stopped scanning raw sources after {MAX_SEARCH_FILES} files in {project_path}"
+                );
+                break;
+            }
+            let ext = entry
+                .path()
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let content = if matches!(
+                ext.as_str(),
+                "md" | "markdown" | "org" | "txt" | "json" | "csv" | "tsv" | "yaml"
+                    | "yml" | "xml" | "html" | "htm" | "rtf"
+            ) {
+                match crate::core::files::read_utf8_file_limited(
+                    entry.path(),
+                    MAX_SOURCE_SEARCH_BYTES,
+                ) {
+                    Some(content) => content,
+                    None => continue,
+                }
+            } else if matches!(
+                ext.as_str(),
+                "pdf" | "doc" | "docx" | "pptx" | "xls" | "xlsx" | "odt" | "ods"
+                    | "odp" | "epub" | "mobi"
+            ) {
+                match crate::core::files::read_preprocessed_cache(
+                    entry.path(),
+                    MAX_SOURCE_SEARCH_BYTES,
+                ) {
+                    Some(content) => content,
+                    None => continue,
+                }
+            } else {
+                continue;
+            };
+            if let Some(mut hit) = score_file(
+                &project_path,
+                entry.path(),
+                &content,
+                &effective_tokens,
+                &query_phrase,
+                &query,
+                false,
+            ) {
+                if include_content {
+                    // Return the evidence-bearing excerpt, not the complete
+                    // source file. This keeps authenticated browser responses
+                    // bounded even when a matching PDF is hundreds of pages.
+                    hit.content = Some(hit.snippet.clone());
+                }
+                results.push(hit);
+            }
+        }
+    }
+
+    results.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let token_hits = results.len();
+    results.truncate(limit);
+    Ok(ProjectSearchResponse {
+        mode: "keyword".to_string(),
+        token_hits,
+        vector_hits: 0,
+        results,
+    })
+}
+
+fn source_path_is_hidden(source_root: &Path, path: &Path) -> bool {
+    path.strip_prefix(source_root)
+        .ok()
+        .map(|relative| {
+            relative.components().any(|part| {
+                part.as_os_str()
+                    .to_str()
+                    .map(|value| value.starts_with('.'))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(true)
 }
 
 pub async fn resolve_query_embedding(
@@ -1452,6 +1594,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.results[0].title, "Phrase");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn source_search_uses_only_visible_raw_sources() {
+        let root = tmp_project();
+        write_page(
+            &root,
+            "wiki/concepts/generated.md",
+            "# Generated\n\nexact source wording",
+        );
+        write_page(
+            &root,
+            "raw/sources/notes.org",
+            "* Policy\nExact source wording from the original notes.",
+        );
+        write_page(
+            &root,
+            "raw/sources/.cache/hidden.txt",
+            "exact source wording hidden cache",
+        );
+
+        let out = search_sources_inner(
+            root.to_string_lossy().to_string(),
+            "exact source wording".into(),
+            20,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(out.mode, "keyword");
+        assert_eq!(out.results.len(), 1);
+        assert_eq!(out.results[0].path, "raw/sources/notes.org");
+        assert!(out.results[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("original notes"));
         let _ = fs::remove_dir_all(root);
     }
 }
