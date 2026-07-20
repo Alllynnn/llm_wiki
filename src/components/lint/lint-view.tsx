@@ -50,20 +50,21 @@ export function shouldShowLintResults(hasRun: boolean, itemCount: number): boole
   return hasRun || itemCount > 0
 }
 
-export type LintMutation =
+export type LintOperation =
+  | { kind: "lint" }
   | { kind: "fix"; itemId: string }
   | { kind: "delete"; itemId: string }
   | { kind: "batch" }
 
-export function createLintMutationGate(
-  onChange: (mutation: LintMutation | null) => void,
-): { begin: (mutation: LintMutation) => boolean; finish: () => void } {
-  let active: LintMutation | null = null
+export function createLintOperationGate(
+  onChange: (operation: LintOperation | null) => void,
+): { begin: (operation: LintOperation) => boolean; finish: () => void } {
+  let active: LintOperation | null = null
   return {
-    begin: (mutation) => {
+    begin: (operation) => {
       if (active) return false
-      active = mutation
-      onChange(mutation)
+      active = operation
+      onChange(operation)
       return true
     },
     finish: () => {
@@ -92,29 +93,29 @@ export function LintView() {
   const removeLintItems = useLintStore((s) => s.removeItems)
   const clearLintItems = useLintStore((s) => s.clearItems)
 
-  const [running, setRunning] = useState(false)
   const [lintProgress, setLintProgress] = useState<{ completed: number; total: number } | null>(null)
   const [hasRun, setHasRun] = useState(false)
   const [runSemantic, setRunSemantic] = useState(false)
-  const [activeMutation, setActiveMutation] = useState<LintMutation | null>(null)
+  const [activeOperation, setActiveOperation] = useState<LintOperation | null>(null)
   const [fixError, setFixError] = useState<string | null>(null)
   const [selectedLintIds, setSelectedLintIds] = useState<Set<string>>(() => new Set())
   const lintAbortRef = useRef<AbortController | null>(null)
-  const mutationGateRef = useRef<ReturnType<typeof createLintMutationGate> | null>(null)
-  if (!mutationGateRef.current) {
-    mutationGateRef.current = createLintMutationGate(setActiveMutation)
+  const operationGateRef = useRef<ReturnType<typeof createLintOperationGate> | null>(null)
+  if (!operationGateRef.current) {
+    operationGateRef.current = createLintOperationGate(setActiveOperation)
   }
-  const mutationGate = mutationGateRef.current
-  const fixingId = activeMutation && "itemId" in activeMutation ? activeMutation.itemId : null
-  const batchFixing = activeMutation?.kind === "batch"
-  const isFixing = activeMutation !== null
+  const operationGate = operationGateRef.current
+  const running = activeOperation?.kind === "lint"
+  const fixingId = activeOperation && "itemId" in activeOperation ? activeOperation.itemId : null
+  const batchFixing = activeOperation?.kind === "batch"
+  const isBusy = activeOperation !== null
+  const isMutating = isBusy && !running
 
   useEffect(() => () => lintAbortRef.current?.abort(), [])
 
   const handleRunLint = useCallback(async () => {
-    if (!project || running) return
+    if (!project || !operationGate.begin({ kind: "lint" })) return
     const pp = normalizePath(project.path)
-    setRunning(true)
     setFixError(null)
     setLintProgress(null)
     setSelectedLintIds(new Set())
@@ -141,10 +142,10 @@ export function LintView() {
       }
     } finally {
       lintAbortRef.current = null
-      setRunning(false)
       setLintProgress(null)
+      operationGate.finish()
     }
-  }, [project, llmConfig, running, runSemantic, addLintItems, clearLintItems])
+  }, [project, llmConfig, operationGate, runSemantic, addLintItems, clearLintItems])
 
   async function handleOpenPage(page: string) {
     if (!project) return
@@ -212,7 +213,7 @@ export function LintView() {
   }, [project, t])
 
   async function handleFix(item: LintItem, refreshTree = true) {
-    if (!project || !mutationGate.begin({ kind: "fix", itemId: item.id })) return
+    if (!project || !operationGate.begin({ kind: "fix", itemId: item.id })) return
     const pp = normalizePath(project.path)
     setFixError(null)
 
@@ -276,7 +277,7 @@ export function LintView() {
       console.error("Fix failed:", err)
       setFixError(err instanceof Error ? err.message : String(err))
     } finally {
-      mutationGate.finish()
+      operationGate.finish()
     }
   }
 
@@ -286,7 +287,7 @@ export function LintView() {
     const pagePath = `${pp}/wiki/${item.page}`
     const confirmed = window.confirm(t("lint.deleteOrphanConfirm", { page: item.page }))
     if (!confirmed) return
-    if (!mutationGate.begin({ kind: "delete", itemId: item.id })) return
+    if (!operationGate.begin({ kind: "delete", itemId: item.id })) return
 
     try {
       // Full cascade: file + embedding chunks + every reference to
@@ -307,7 +308,7 @@ export function LintView() {
     } catch (err) {
       console.error("Delete failed:", err)
     } finally {
-      mutationGate.finish()
+      operationGate.finish()
     }
   }
 
@@ -357,7 +358,7 @@ export function LintView() {
   }, [addLintItemToReview, removeLintItems, selectedLintItems])
 
   const handleBatchFix = useCallback(async () => {
-    if (!project || selectedLintItems.length === 0 || !mutationGate.begin({ kind: "batch" })) return
+    if (!project || selectedLintItems.length === 0 || !operationGate.begin({ kind: "batch" })) return
     setFixError(null)
     const pp = normalizePath(project.path)
     let filesystemChanged = false
@@ -413,10 +414,10 @@ export function LintView() {
           })
         }
       } finally {
-        mutationGate.finish()
+        operationGate.finish()
       }
     }
-  }, [addLintItemToReview, mutationGate, project, removeLintItems, selectedLintItems])
+  }, [addLintItemToReview, operationGate, project, removeLintItems, selectedLintItems])
 
   return (
     <div className="flex h-full flex-col">
@@ -443,7 +444,7 @@ export function LintView() {
             size="sm"
             variant={running ? "outline" : "default"}
             onClick={running ? () => lintAbortRef.current?.abort() : handleRunLint}
-            disabled={!project}
+            disabled={!project || isMutating}
           >
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${running ? "animate-spin" : ""}`} />
             {running
@@ -473,7 +474,7 @@ export function LintView() {
             variant="outline"
             size="sm"
             className="h-7 text-xs"
-            disabled={selectedLintItems.length === 0 || isFixing}
+            disabled={selectedLintItems.length === 0 || isBusy}
             onClick={handleBatchFix}
           >
             {batchFixing ? t("lint.fixing") : t("lint.fixSelected")}
@@ -482,7 +483,7 @@ export function LintView() {
             variant="outline"
             size="sm"
             className="h-7 text-xs"
-            disabled={selectedLintItems.length === 0 || isFixing}
+            disabled={selectedLintItems.length === 0 || isBusy}
             onClick={handleBatchSendToReview}
           >
             {t("lint.sendSelectedToReview")}
@@ -491,7 +492,7 @@ export function LintView() {
             variant="outline"
             size="sm"
             className="h-7 text-xs text-destructive hover:text-destructive"
-            disabled={selectedLintItems.length === 0 || isFixing}
+            disabled={selectedLintItems.length === 0 || isBusy}
             onClick={handleBatchDismiss}
           >
             {t("lint.ignoreSelected")}
@@ -527,7 +528,7 @@ export function LintView() {
                 key={item.id}
                 item={item}
                 fixing={fixingId === item.id}
-                mutationsDisabled={isFixing}
+                operationsDisabled={isBusy}
                 selected={selectedLintIds.has(item.id)}
                 onSelectedChange={setLintSelected}
                 onOpenPage={handleOpenPage}
@@ -545,7 +546,7 @@ export function LintView() {
                 key={item.id}
                 item={item}
                 fixing={fixingId === item.id}
-                mutationsDisabled={isFixing}
+                operationsDisabled={isBusy}
                 selected={selectedLintIds.has(item.id)}
                 onSelectedChange={setLintSelected}
                 onOpenPage={handleOpenPage}
@@ -586,7 +587,7 @@ function SectionHeader({
 export function LintCard({
   item,
   fixing,
-  mutationsDisabled,
+  operationsDisabled,
   selected,
   onSelectedChange,
   onOpenPage,
@@ -597,7 +598,7 @@ export function LintCard({
 }: {
   item: LintItem
   fixing: boolean
-  mutationsDisabled: boolean
+  operationsDisabled: boolean
   selected: boolean
   onSelectedChange: (id: string, selected: boolean) => void
   onOpenPage: (page: string) => void
@@ -676,7 +677,7 @@ export function LintCard({
           size="sm"
           className="h-6 text-xs gap-1"
           aria-label={t("lint.fix")}
-          disabled={mutationsDisabled || fixing}
+          disabled={operationsDisabled || fixing}
           onClick={() => onFix(item)}
         >
           <Wrench className="h-3 w-3" />
@@ -688,7 +689,7 @@ export function LintCard({
             size="sm"
             className="h-6 text-xs gap-1 text-destructive hover:text-destructive"
             aria-label={t("lint.delete")}
-            disabled={mutationsDisabled}
+            disabled={operationsDisabled}
             onClick={() => onDelete(item)}
           >
             <Trash2 className="h-3 w-3" />

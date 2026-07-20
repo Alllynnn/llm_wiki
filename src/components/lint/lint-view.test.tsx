@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { AlertTriangle, Info } from "lucide-react"
 import { describe, expect, it, vi } from "vitest"
-import { createLintMutationGate, LintCard, type LintMutation } from "./lint-view"
+import { createLintOperationGate, LintCard, type LintOperation } from "./lint-view"
 import type { LintItem } from "@/stores/lint-store"
 
 const item: LintItem = {
@@ -14,17 +14,22 @@ const item: LintItem = {
 }
 
 describe("LintCard mutation locking", () => {
-  it("publishes delete busy state and rejects an overlapping fix", () => {
-    const transitions: Array<LintMutation | null> = []
-    const gate = createLintMutationGate((mutation) => transitions.push(mutation))
+  it("blocks a lint scan until an active batch write finishes", async () => {
+    const transitions: Array<LintOperation | null> = []
+    const gate = createLintOperationGate((operation) => transitions.push(operation))
+    let finishWrite!: () => void
+    const writePending = new Promise<void>((resolve) => { finishWrite = resolve })
 
-    expect(gate.begin({ kind: "delete", itemId: "lint-1" })).toBe(true)
-    expect(gate.begin({ kind: "fix", itemId: "lint-1" })).toBe(false)
-    expect(transitions).toEqual([{ kind: "delete", itemId: "lint-1" }])
-
-    gate.finish()
-    expect(transitions.at(-1)).toBeNull()
     expect(gate.begin({ kind: "batch" })).toBe(true)
+    const batchWrite = writePending.finally(() => gate.finish())
+    expect(gate.begin({ kind: "lint" })).toBe(false)
+    expect(transitions).toEqual([{ kind: "batch" }])
+
+    finishWrite()
+    await batchWrite
+    expect(transitions.at(-1)).toBeNull()
+    expect(gate.begin({ kind: "lint" })).toBe(true)
+    expect(gate.begin({ kind: "fix", itemId: "lint-1" })).toBe(false)
   })
 
   it("disables fix and delete while another lint mutation is running", () => {
@@ -32,7 +37,7 @@ describe("LintCard mutation locking", () => {
       <LintCard
         item={item}
         fixing={false}
-        mutationsDisabled
+        operationsDisabled
         selected={false}
         onSelectedChange={vi.fn()}
         onOpenPage={vi.fn()}
