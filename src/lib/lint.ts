@@ -104,6 +104,13 @@ function tokenizeForSuggestion(text: string): Set<string> {
   return tokens
 }
 
+function isAbortError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "name" in error
+    && error.name === "AbortError"
+}
+
 // ── Structural lint ───────────────────────────────────────────────────────────
 
 export interface StructuralLintOptions {
@@ -214,12 +221,27 @@ export async function runSemanticLint(
     detail: "Reading wiki pages...",
     filesWritten: [],
   })
+  const finishCancelledActivity = () => {
+    activity.updateItem(activityId, {
+      status: "done",
+      detail: "Semantic lint cancelled.",
+    })
+  }
+  const throwIfCancelled = () => {
+    if (!signal?.aborted) return
+    finishCancelledActivity()
+    throw new DOMException("Semantic lint cancelled", "AbortError")
+  }
 
   const wikiRoot = `${pp}/wiki`
   let tree: FileNode[]
   try {
     tree = await listDirectory(wikiRoot)
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) {
+      finishCancelledActivity()
+      throw error
+    }
     activity.updateItem(activityId, { status: "error", detail: "Failed to read wiki directory." })
     return []
   }
@@ -234,7 +256,7 @@ export async function runSemanticLint(
   const summaries: string[] = []
   const existingPageNames = new Set<string>()
   for (const f of wikiFiles) {
-    if (signal?.aborted) throw new DOMException("Semantic lint cancelled", "AbortError")
+    throwIfCancelled()
     const basename = f.name.replace(/\.md$/i, "")
     if (basename) existingPageNames.add(normalizeForExistence(basename))
     try {
@@ -244,10 +266,15 @@ export async function runSemanticLint(
       const title = extractTitle(content, shortPath)
       if (title) existingPageNames.add(normalizeForExistence(title))
       summaries.push(`### ${shortPath}\n${preview}`)
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) {
+        finishCancelledActivity()
+        throw error
+      }
       // skip
     }
   }
+  throwIfCancelled()
 
   if (summaries.length === 0) {
     activity.updateItem(activityId, { status: "done", detail: "No wiki pages to lint." })
@@ -293,25 +320,37 @@ export async function runSemanticLint(
   let raw = ""
   let hadError = false
 
-  await streamChat(
-    llmConfig,
-    [{ role: "user", content: prompt }],
-    {
-      onToken: (token) => { raw += token },
-      onDone: () => {},
-      onError: (err) => {
-        hadError = true
-        activity.updateItem(activityId, {
-          status: "error",
-          detail: `LLM error: ${err.message}`,
-        })
+  try {
+    await streamChat(
+      llmConfig,
+      [{ role: "user", content: prompt }],
+      {
+        onToken: (token) => { raw += token },
+        onDone: () => {},
+        onError: (err) => {
+          hadError = true
+          activity.updateItem(activityId, {
+            status: "error",
+            detail: `LLM error: ${err.message}`,
+          })
+        },
       },
-    },
-    signal,
-  )
+      signal,
+    )
+  } catch (error) {
+    if (isAbortError(error)) {
+      finishCancelledActivity()
+    } else {
+      activity.updateItem(activityId, {
+        status: "error",
+        detail: `Semantic lint failed: ${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+    throw error
+  }
 
-  if (signal?.aborted) throw new DOMException("Semantic lint cancelled", "AbortError")
   if (hadError) return []
+  throwIfCancelled()
 
   const results: LintResult[] = []
   const matches = raw.matchAll(LINT_BLOCK_REGEX)

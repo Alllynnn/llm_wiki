@@ -25,8 +25,13 @@ const RELATED_PAGE_SUGGESTION_MIN_SCORE = 0.08
 const SAME_FOLDER_SCORE_BONUS = 0.08
 const SINGLE_CJK_TOKEN_WEIGHT = 0.35
 const SAME_BASENAME_SCORE = 0.96
-const CONTAINS_TARGET_SCORE = 0.82
 const MAX_SUGGESTION_CANDIDATES = 64
+
+interface NameIndexNode {
+  value: string
+  pageIndexes: Set<number>
+  children: Map<number, NameIndexNode>
+}
 
 function fileName(path: string): string {
   return path.replace(/\\/g, "/").split("/").pop() ?? path
@@ -65,18 +70,56 @@ function stringSimilarity(a: string, b: string): number {
   const leftBase = fileName(left)
   const rightBase = fileName(right)
   if (leftBase === rightBase) return SAME_BASENAME_SCORE
-  if (right.includes(left) || left.includes(right)) return CONTAINS_TARGET_SCORE
   if (leftBase.length < 5 || rightBase.length < 5) return 0
   return 1 - levenshtein(leftBase, rightBase) / Math.max(leftBase.length, rightBase.length)
 }
 
-function fragments(value: string): string[] {
-  const normalized = normalizeTarget(value).normalize("NFKC")
-  const chars = Array.from(normalized)
-  if (chars.length < 2) return normalized ? [normalized] : []
-  const result = new Set<string>()
-  for (let i = 0; i < chars.length - 1; i += 1) result.add(`${chars[i]}${chars[i + 1]}`)
-  return Array.from(result)
+function addNameToIndex(root: NameIndexNode | undefined, value: string, pageIndex: number): NameIndexNode {
+  if (!root) {
+    return { value, pageIndexes: new Set([pageIndex]), children: new Map() }
+  }
+  let node = root
+  while (true) {
+    const distance = levenshtein(value, node.value)
+    if (distance === 0) {
+      node.pageIndexes.add(pageIndex)
+      return root
+    }
+    const child = node.children.get(distance)
+    if (child) {
+      node = child
+      continue
+    }
+    node.children.set(distance, {
+      value,
+      pageIndexes: new Set([pageIndex]),
+      children: new Map(),
+    })
+    return root
+  }
+}
+
+function queryNameIndex(
+  root: NameIndexNode | undefined,
+  value: string,
+  maxDistance: number,
+): Set<number> {
+  const result = new Set<number>()
+  if (!root) return result
+  const pending = [root]
+  while (pending.length > 0) {
+    const node = pending.pop()!
+    const distance = levenshtein(value, node.value)
+    if (distance <= maxDistance) {
+      for (const pageIndex of node.pageIndexes) result.add(pageIndex)
+    }
+    const minimumEdge = distance - maxDistance
+    const maximumEdge = distance + maxDistance
+    for (const [edge, child] of node.children) {
+      if (edge >= minimumEdge && edge <= maximumEdge) pending.push(child)
+    }
+  }
+  return result
 }
 
 function addToIndex(index: Map<string, number[]>, key: string, pageIndex: number): void {
@@ -100,15 +143,16 @@ export function computeStructuralLint(
   const pages: IndexedPage[] = rawPages.map((page) => ({ ...page, tokenSet: new Set(page.tokens) }))
   const slugMap = new Map<string, number>()
   const tokenIndex = new Map<string, number[]>()
-  const fragmentIndex = new Map<string, number[]>()
+  let nameIndex: NameIndexNode | undefined
 
   pages.forEach((page, index) => {
     const basename = fileName(page.shortName).replace(/\.md$/i, "")
     slugMap.set(normalizeTarget(page.slug), index)
     slugMap.set(normalizeTarget(basename), index)
     for (const token of page.tokenSet) addToIndex(tokenIndex, token, index)
-    for (const value of [page.slug, page.shortName, page.title]) {
-      for (const fragment of fragments(value)) addToIndex(fragmentIndex, fragment, index)
+    for (const value of [page.slug, page.shortName, page.title, basename]) {
+      const normalized = fileName(normalizeTarget(value).normalize("NFKC"))
+      if (normalized) nameIndex = addNameToIndex(nameIndex, normalized, index)
     }
   })
 
@@ -151,15 +195,28 @@ export function computeStructuralLint(
     return best && best.score >= RELATED_PAGE_SUGGESTION_MIN_SCORE ? best.page : undefined
   }
 
+  const brokenCandidateCache = new Map<string, IndexedPage | undefined>()
   function brokenCandidate(target: string): IndexedPage | undefined {
-    const scores = new Map<number, number>()
-    for (const fragment of fragments(target)) {
-      for (const candidate of fragmentIndex.get(fragment) ?? []) {
-        scores.set(candidate, (scores.get(candidate) ?? 0) + 1)
-      }
+    // stringSimilarity ultimately compares basenames, so query the metric
+    // index with the same representation. This keeps folder differences from
+    // excluding an otherwise valid nearest filename.
+    const normalized = fileName(normalizeTarget(target).normalize("NFKC"))
+    if (brokenCandidateCache.has(normalized)) return brokenCandidateCache.get(normalized)
+    if (!normalized) {
+      brokenCandidateCache.set(normalized, undefined)
+      return undefined
     }
+    // Any candidate meeting the similarity threshold must be within this
+    // conservative edit-distance radius, including candidates longer than the
+    // target. A BK-tree query therefore preserves the true nearest candidate
+    // without an arbitrary top-N pruning cliff.
+    const maxDistance = normalized.length < 5
+      ? 0
+      : Math.ceil(
+          normalized.length * (1 - BROKEN_LINK_SUGGESTION_MIN_SCORE) / BROKEN_LINK_SUGGESTION_MIN_SCORE,
+        )
     let best: { page: IndexedPage; score: number } | undefined
-    for (const candidateIndex of topCandidates(scores, -1)) {
+    for (const candidateIndex of queryNameIndex(nameIndex, normalized, maxDistance)) {
       const candidate = pages[candidateIndex]
       const score = Math.max(
         stringSimilarity(target, candidate.slug),
@@ -168,7 +225,9 @@ export function computeStructuralLint(
       )
       if (score > (best?.score ?? 0)) best = { page: candidate, score }
     }
-    return best && best.score >= BROKEN_LINK_SUGGESTION_MIN_SCORE ? best.page : undefined
+    const result = best && best.score >= BROKEN_LINK_SUGGESTION_MIN_SCORE ? best.page : undefined
+    brokenCandidateCache.set(normalized, result)
+    return result
   }
 
   const results: StructuralLintFinding[] = []
