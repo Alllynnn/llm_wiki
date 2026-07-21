@@ -9,6 +9,8 @@ describe("chat-store conversation isolation", () => {
       messages: [],
       isStreaming: false,
       streamingContent: "",
+      streamingRequestId: null,
+      streamingConversationId: null,
       mode: "chat",
       ingestSource: null,
       useWebSearch: false,
@@ -47,6 +49,40 @@ describe("chat-store conversation isolation", () => {
         useAnyTxtSearch: false,
       }),
     ])
+  })
+
+  it("binds streamed output to the conversation that started the request", () => {
+    const first = useChatStore.getState().createConversation()
+    const second = useChatStore.getState().createConversation()
+    useChatStore.getState().setActiveConversation(first)
+    useChatStore.getState().startStreamForConversation("request-1", first)
+
+    useChatStore.getState().setActiveConversation(second)
+    useChatStore.getState().appendStreamTokenForRequest("request-1", "answer")
+    useChatStore.getState().finalizeStreamForRequest("request-1", "answer")
+
+    const state = useChatStore.getState()
+    expect(state.messages.filter((message) => message.conversationId === first)).toEqual([
+      expect.objectContaining({ role: "assistant", content: "answer" }),
+    ])
+    expect(state.messages.filter((message) => message.conversationId === second)).toEqual([])
+    expect(state.streamingRequestId).toBeNull()
+    expect(state.streamingConversationId).toBeNull()
+  })
+
+  it("ignores a settled old request after a newer request has started", () => {
+    const first = useChatStore.getState().createConversation()
+    useChatStore.getState().startStreamForConversation("request-1", first)
+    useChatStore.getState().startStreamForConversation("request-2", first)
+
+    useChatStore.getState().appendStreamTokenForRequest("request-1", "stale")
+    useChatStore.getState().finalizeStreamForRequest("request-1", "stale")
+
+    const state = useChatStore.getState()
+    expect(state.isStreaming).toBe(true)
+    expect(state.streamingRequestId).toBe("request-2")
+    expect(state.streamingContent).toBe("")
+    expect(state.messages).toEqual([])
   })
 
   it("writes async assistant results back to the original conversation", () => {

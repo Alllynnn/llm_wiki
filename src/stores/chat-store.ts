@@ -63,6 +63,8 @@ interface ChatState {
   messages: DisplayMessage[]
   isStreaming: boolean
   streamingContent: string
+  streamingRequestId: string | null
+  streamingConversationId: string | null
   mode: "chat" | "ingest"
   ingestSource: string | null
   maxHistoryMessages: number
@@ -87,6 +89,10 @@ interface ChatState {
   setConversations: (conversations: Conversation[]) => void
   setStreaming: (streaming: boolean) => void
   appendStreamToken: (token: string) => void
+  startStreamForConversation: (requestId: string, conversationId: string) => void
+  appendStreamTokenForRequest: (requestId: string, token: string) => void
+  endStreamForRequest: (requestId: string) => void
+  finalizeStreamForRequest: (requestId: string, content: string, references?: MessageReference[]) => void
   finalizeStream: (content: string, references?: MessageReference[], agentSteps?: ChatAgentStep[], userInputRequest?: ChatUserInputRequest, agentFileChanges?: ChatAgentFileChange[]) => void
   finalizeStreamForConversation: (conversationId: string, content: string, references?: MessageReference[], agentSteps?: ChatAgentStep[], userInputRequest?: ChatUserInputRequest, agentFileChanges?: ChatAgentFileChange[]) => void
   setMode: (mode: ChatState["mode"]) => void
@@ -123,6 +129,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
   streamingContent: "",
+  streamingRequestId: null,
+  streamingConversationId: null,
   mode: "chat",
   ingestSource: null,
   maxHistoryMessages: 10,
@@ -148,8 +156,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       conversations: [newConversation, ...state.conversations],
       activeConversationId: id,
-      isStreaming: false,
-      streamingContent: "",
+      ...(state.streamingRequestId ? {} : { isStreaming: false, streamingContent: "" }),
       selectedSkills: [],
       selectedContextFiles: [],
     }))
@@ -175,7 +182,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setActiveConversation: (id) =>
     set((state) => ({
       activeConversationId: id,
-      streamingContent: "",
+      ...(state.streamingRequestId ? {} : { streamingContent: "" }),
       selectedSkills: state.conversations.find((conversation) => conversation.id === id)?.selectedSkills ?? [],
       selectedContextFiles: state.conversations.find((conversation) => conversation.id === id)?.contextFiles ?? [],
     })),
@@ -250,6 +257,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setStreaming: (isStreaming) => set((state) => ({
     isStreaming,
+    streamingRequestId: null,
+    streamingConversationId: null,
     // Each new run owns its own stream buffer. Without this reset, a newly
     // created conversation can briefly render tokens left by another
     // conversation until the next token arrives.
@@ -260,6 +269,78 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       streamingContent: state.streamingContent + token,
     })),
+
+  startStreamForConversation: (requestId, conversationId) =>
+    set((state) => {
+      if (!state.conversations.some((conversation) => conversation.id === conversationId)) {
+        return state
+      }
+      return {
+        isStreaming: true,
+        streamingContent: "",
+        streamingRequestId: requestId,
+        streamingConversationId: conversationId,
+      }
+    }),
+
+  appendStreamTokenForRequest: (requestId, token) =>
+    set((state) => {
+      if (state.streamingRequestId !== requestId) return state
+      return { streamingContent: state.streamingContent + token }
+    }),
+
+  endStreamForRequest: (requestId) =>
+    set((state) => {
+      if (state.streamingRequestId !== requestId) return state
+      return {
+        isStreaming: false,
+        streamingContent: "",
+        streamingRequestId: null,
+        streamingConversationId: null,
+      }
+    }),
+
+  finalizeStreamForRequest: (requestId, content, references) =>
+    set((state) => {
+      if (state.streamingRequestId !== requestId) return state
+      const conversationId = state.streamingConversationId
+      if (!conversationId) {
+        return {
+          isStreaming: false,
+          streamingContent: "",
+          streamingRequestId: null,
+          streamingConversationId: null,
+        }
+      }
+      if (!state.conversations.some((conversation) => conversation.id === conversationId)) {
+        return {
+          isStreaming: false,
+          streamingContent: "",
+          streamingRequestId: null,
+          streamingConversationId: null,
+        }
+      }
+      const newMessage: DisplayMessage = {
+        id: nextId(),
+        role: "assistant",
+        content,
+        timestamp: Date.now(),
+        conversationId,
+        references,
+      }
+      return {
+        isStreaming: false,
+        streamingContent: "",
+        streamingRequestId: null,
+        streamingConversationId: null,
+        messages: [...state.messages, newMessage],
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === conversationId
+            ? { ...conversation, updatedAt: Date.now() }
+            : conversation
+        ),
+      }
+    }),
 
   finalizeStream: (content, references, agentSteps, userInputRequest, agentFileChanges) => {
     const activeConversationId = get().activeConversationId

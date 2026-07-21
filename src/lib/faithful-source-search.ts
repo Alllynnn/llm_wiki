@@ -12,6 +12,8 @@ export interface FaithfulSourceResult {
 
 interface FaithfulSourceSearchResponse {
   results: FaithfulSourceResult[]
+  truncated?: boolean
+  truncationReason?: string
 }
 
 /**
@@ -41,6 +43,10 @@ export async function searchFaithfulSources(
         { signal },
       )
     : await apiCall<FaithfulSourceSearchResponse>("POST", "/api/v1/sources/search", body)
+  if (response.truncated) {
+    const reason = response.truncationReason?.replace(/_/g, " ") ?? "safety budget"
+    throw new Error(`Original source search stopped at its ${reason}; results may be incomplete`)
+  }
   return response.results.map((result) => ({
     ...result,
     path: `${pp}/${normalizePath(result.path).replace(/^\/+/, "")}`,

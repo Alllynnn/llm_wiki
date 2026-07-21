@@ -49,4 +49,16 @@ describe("searchFaithfulSources", () => {
       { signal: controller.signal },
     )
   })
+
+  it("rejects truncated scans instead of presenting partial evidence as complete", async () => {
+    apiCall.mockResolvedValueOnce({
+      results: [],
+      truncated: true,
+      truncationReason: "byte_budget",
+    })
+
+    await expect(searchFaithfulSources("/projects/demo", "policy", 10)).rejects.toThrow(
+      "Original source search stopped at its byte budget",
+    )
+  })
 })

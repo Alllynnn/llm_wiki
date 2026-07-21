@@ -17,6 +17,30 @@ use crate::http::session_event_sink::SessionEventSink;
 use crate::http::AppState;
 use crate::storage::paths::resolve_project_path;
 
+struct CancelSourceSearchOnDrop {
+    cancellation: Option<crate::core::search::SourceSearchCancellation>,
+}
+
+impl CancelSourceSearchOnDrop {
+    fn new(cancellation: crate::core::search::SourceSearchCancellation) -> Self {
+        Self {
+            cancellation: Some(cancellation),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.cancellation = None;
+    }
+}
+
+impl Drop for CancelSourceSearchOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.cancellation.take() {
+            cancellation.cancel();
+        }
+    }
+}
+
 pub fn sources_router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/sources/ingest", post(ingest))
@@ -45,13 +69,17 @@ async fn search(
             ApiError::bad_request("PATH_ESCAPE", e.to_string())
                 .with_details(serde_json::json!({ "requested": req.project_path }))
         })?;
+    let cancellation = crate::core::search::SourceSearchCancellation::default();
+    let mut cancel_on_drop = CancelSourceSearchOnDrop::new(cancellation.clone());
     let result = crate::core::search::search_sources(
         project_root.to_string_lossy().to_string(),
         req.query,
         req.top_k,
         req.include_content,
+        cancellation,
     )
     .await?;
+    cancel_on_drop.disarm();
     let value = serde_json::to_value(result).map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(Json(value))
 }
@@ -443,6 +471,15 @@ mod tests {
         let results = value["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["path"], "raw/sources/notes.org");
+    }
+
+    #[test]
+    fn dropping_source_search_guard_cancels_the_blocking_scan() {
+        let cancellation = crate::core::search::SourceSearchCancellation::default();
+        {
+            let _guard = CancelSourceSearchOnDrop::new(cancellation.clone());
+        }
+        assert!(cancellation.is_cancelled());
     }
 
     // ── sources_ingest_returns_202_and_schedules_work ─────────────────────────

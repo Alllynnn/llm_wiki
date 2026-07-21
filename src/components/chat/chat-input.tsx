@@ -155,10 +155,6 @@ export function ChatInput({
   const effectiveRetrievalMode = browserRetrievalMode(retrievalMode)
 
   useEffect(() => {
-    if (retrievalMode === "smart") onRetrievalModeChange("standard")
-  }, [onRetrievalModeChange, retrievalMode])
-
-  useEffect(() => {
     if (!anyTxtAvailable) setUseAnyTxtSearch(false)
   }, [anyTxtAvailable])
 

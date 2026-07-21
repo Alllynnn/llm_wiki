@@ -7,6 +7,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+#[cfg(test)]
+use std::sync::Barrier;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -47,6 +54,74 @@ const SNIPPET_CONTEXT: usize = 80;
 const SEARCH_EMBEDDING_TIMEOUT_SECS: u64 = 8;
 const MAX_SEARCH_FILES: usize = 10_000;
 const MAX_SOURCE_SEARCH_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_SOURCE_SEARCH_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SOURCE_SEARCH_DURATION: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Default)]
+pub struct SourceSearchCancellation {
+    cancelled: Arc<AtomicBool>,
+    #[cfg(test)]
+    scan_gate: Option<Arc<SourceSearchTestGate>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct SourceSearchTestGate {
+    entered: Barrier,
+    resume: Barrier,
+}
+
+impl SourceSearchCancellation {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn with_scan_gate() -> (Self, Arc<SourceSearchTestGate>) {
+        let gate = Arc::new(SourceSearchTestGate {
+            entered: Barrier::new(2),
+            resume: Barrier::new(2),
+        });
+        (
+            Self {
+                cancelled: Arc::new(AtomicBool::new(false)),
+                scan_gate: Some(gate.clone()),
+            },
+            gate,
+        )
+    }
+
+    #[cfg(test)]
+    fn notify_source_read(&self) {
+        if let Some(gate) = &self.scan_gate {
+            gate.entered.wait();
+            gate.resume.wait();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SourceSearchLimits {
+    max_files: usize,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+    max_duration: Duration,
+}
+
+impl Default for SourceSearchLimits {
+    fn default() -> Self {
+        Self {
+            max_files: MAX_SEARCH_FILES,
+            max_file_bytes: MAX_SOURCE_SEARCH_BYTES,
+            max_total_bytes: MAX_SOURCE_SEARCH_TOTAL_BYTES,
+            max_duration: MAX_SOURCE_SEARCH_DURATION,
+        }
+    }
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public data types
@@ -81,6 +156,10 @@ pub struct ProjectSearchResponse {
     pub results: Vec<ProjectSearchResult>,
     pub token_hits: usize,
     pub vector_hits: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +215,7 @@ pub async fn search_sources(
     query: String,
     top_k: Option<usize>,
     include_content: Option<bool>,
+    cancellation: SourceSearchCancellation,
 ) -> Result<ProjectSearchResponse, SearchError> {
     tokio::task::spawn_blocking(move || {
         crate::panic_guard::run_guarded("search_sources", || {
@@ -144,6 +224,8 @@ pub async fn search_sources(
                 query,
                 top_k.unwrap_or(DEFAULT_RESULTS),
                 include_content.unwrap_or(false),
+                cancellation,
+                SourceSearchLimits::default(),
             )
         })
     })
@@ -157,6 +239,8 @@ fn search_sources_inner(
     query: String,
     top_k: usize,
     include_content: bool,
+    cancellation: SourceSearchCancellation,
+    limits: SourceSearchLimits,
 ) -> Result<ProjectSearchResponse, String> {
     if query.trim().is_empty() {
         return Err("query is required".to_string());
@@ -172,19 +256,38 @@ fn search_sources_inner(
     let source_root = Path::new(&project_path).join("raw").join("sources");
     let mut results = Vec::new();
     let mut searched_files = 0usize;
+    let mut searched_bytes = 0u64;
+    let started = Instant::now();
+    let mut truncation_reason = None;
 
     if source_root.exists() {
         for entry in WalkDir::new(&source_root).into_iter().filter_map(Result::ok) {
+            if cancellation.is_cancelled() {
+                truncation_reason = Some("cancelled".to_string());
+                break;
+            }
+            if started.elapsed() >= limits.max_duration {
+                truncation_reason = Some("time_budget".to_string());
+                break;
+            }
             if !entry.file_type().is_file() || source_path_is_hidden(&source_root, entry.path()) {
                 continue;
             }
             searched_files += 1;
-            if searched_files > MAX_SEARCH_FILES {
+            if searched_files > limits.max_files {
+                truncation_reason = Some("file_budget".to_string());
                 eprintln!(
-                    "[Search] stopped scanning raw sources after {MAX_SEARCH_FILES} files in {project_path}"
+                    "[Search] stopped scanning raw sources after {} files in {project_path}",
+                    limits.max_files
                 );
                 break;
             }
+            let remaining_bytes = limits.max_total_bytes.saturating_sub(searched_bytes);
+            if remaining_bytes == 0 {
+                truncation_reason = Some("byte_budget".to_string());
+                break;
+            }
+            let read_limit = limits.max_file_bytes.min(remaining_bytes);
             let ext = entry
                 .path()
                 .extension()
@@ -198,10 +301,25 @@ fn search_sources_inner(
             ) {
                 match crate::core::files::read_utf8_file_limited(
                     entry.path(),
-                    MAX_SOURCE_SEARCH_BYTES,
+                    read_limit,
                 ) {
-                    Some(content) => content,
-                    None => continue,
+                    crate::core::files::LimitedTextRead::Content(content) => content,
+                    crate::core::files::LimitedTextRead::TooLarge => {
+                        truncation_reason = Some(if read_limit < limits.max_file_bytes {
+                            "byte_budget".to_string()
+                        } else {
+                            "file_byte_budget".to_string()
+                        });
+                        break;
+                    }
+                    crate::core::files::LimitedTextRead::Unavailable(bytes_read) => {
+                        searched_bytes = searched_bytes.saturating_add(bytes_read.min(read_limit));
+                        if bytes_read > 0 && searched_bytes >= limits.max_total_bytes {
+                            truncation_reason = Some("byte_budget".to_string());
+                            break;
+                        }
+                        continue;
+                    }
                 }
             } else if matches!(
                 ext.as_str(),
@@ -210,14 +328,40 @@ fn search_sources_inner(
             ) {
                 match crate::core::files::read_preprocessed_cache(
                     entry.path(),
-                    MAX_SOURCE_SEARCH_BYTES,
+                    read_limit,
                 ) {
-                    Some(content) => content,
-                    None => continue,
+                    crate::core::files::LimitedTextRead::Content(content) => content,
+                    crate::core::files::LimitedTextRead::TooLarge => {
+                        truncation_reason = Some(if read_limit < limits.max_file_bytes {
+                            "byte_budget".to_string()
+                        } else {
+                            "file_byte_budget".to_string()
+                        });
+                        break;
+                    }
+                    crate::core::files::LimitedTextRead::Unavailable(bytes_read) => {
+                        searched_bytes = searched_bytes.saturating_add(bytes_read.min(read_limit));
+                        if bytes_read > 0 && searched_bytes >= limits.max_total_bytes {
+                            truncation_reason = Some("byte_budget".to_string());
+                            break;
+                        }
+                        continue;
+                    }
                 }
             } else {
                 continue;
             };
+            searched_bytes = searched_bytes.saturating_add(content.len() as u64);
+            #[cfg(test)]
+            cancellation.notify_source_read();
+            if cancellation.is_cancelled() {
+                truncation_reason = Some("cancelled".to_string());
+                break;
+            }
+            if started.elapsed() >= limits.max_duration {
+                truncation_reason = Some("time_budget".to_string());
+                break;
+            }
             if let Some(mut hit) = score_file(
                 &project_path,
                 entry.path(),
@@ -251,6 +395,8 @@ fn search_sources_inner(
         mode: "keyword".to_string(),
         token_hits,
         vector_hits: 0,
+        truncated: truncation_reason.is_some(),
+        truncation_reason,
         results,
     })
 }
@@ -424,6 +570,8 @@ pub async fn search_project_inner(
             mode: "keyword".to_string(),
             token_hits: token_rank.len(),
             vector_hits,
+            truncated: false,
+            truncation_reason: None,
             results,
         });
     }
@@ -442,6 +590,8 @@ pub async fn search_project_inner(
         mode: search_mode(token_rank.is_empty(), vector_hits).to_string(),
         token_hits: token_rank.len(),
         vector_hits,
+        truncated: false,
+        truncation_reason: None,
         results,
     })
 }
@@ -1621,6 +1771,8 @@ mod tests {
             "exact source wording".into(),
             20,
             true,
+            SourceSearchCancellation::default(),
+            SourceSearchLimits::default(),
         )
         .unwrap();
 
@@ -1632,6 +1784,170 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("original notes"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_search_stops_before_reading_when_cancelled() {
+        let root = tmp_project();
+        write_page(
+            &root,
+            "raw/sources/notes.txt",
+            "exact source wording from a cancelled scan",
+        );
+        let cancellation = SourceSearchCancellation::default();
+        cancellation.cancel();
+
+        let out = search_sources_inner(
+            root.to_string_lossy().to_string(),
+            "exact source wording".into(),
+            20,
+            true,
+            cancellation,
+            SourceSearchLimits::default(),
+        )
+        .unwrap();
+
+        assert!(out.results.is_empty());
+        assert_eq!(out.truncation_reason.as_deref(), Some("cancelled"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_search_observes_cancellation_after_reading_a_source() {
+        let root = tmp_project();
+        write_page(
+            &root,
+            "raw/sources/notes.txt",
+            "exact source wording from an interrupted scan",
+        );
+        let (cancellation, gate) = SourceSearchCancellation::with_scan_gate();
+        let worker_cancellation = cancellation.clone();
+        let project_path = root.to_string_lossy().to_string();
+        let worker = std::thread::spawn(move || {
+            search_sources_inner(
+                project_path,
+                "exact source wording".into(),
+                20,
+                true,
+                worker_cancellation,
+                SourceSearchLimits::default(),
+            )
+            .unwrap()
+        });
+
+        gate.entered.wait();
+        cancellation.cancel();
+        gate.resume.wait();
+        let out = worker.join().unwrap();
+
+        assert!(out.results.is_empty());
+        assert_eq!(out.truncation_reason.as_deref(), Some("cancelled"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_search_honors_total_byte_budget() {
+        let root = tmp_project();
+        write_page(&root, "raw/sources/a.txt", "x123");
+        write_page(&root, "raw/sources/b.txt", "x456");
+        let cancellation = SourceSearchCancellation::default();
+        let limits = SourceSearchLimits {
+            max_total_bytes: 5,
+            ..SourceSearchLimits::default()
+        };
+
+        let out = search_sources_inner(
+            root.to_string_lossy().to_string(),
+            "x".into(),
+            20,
+            true,
+            cancellation,
+            limits,
+        )
+        .unwrap();
+
+        assert_eq!(out.results.len(), 1);
+        assert_eq!(out.truncation_reason.as_deref(), Some("byte_budget"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_search_marks_an_oversized_source_as_truncated() {
+        let root = tmp_project();
+        write_page(&root, "raw/sources/large.txt", "123456");
+
+        let out = search_sources_inner(
+            root.to_string_lossy().to_string(),
+            "123".into(),
+            20,
+            true,
+            SourceSearchCancellation::default(),
+            SourceSearchLimits {
+                max_file_bytes: 5,
+                ..SourceSearchLimits::default()
+            },
+        )
+        .unwrap();
+
+        assert!(out.results.is_empty());
+        assert_eq!(
+            out.truncation_reason.as_deref(),
+            Some("file_byte_budget")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_binary_caches_do_not_consume_the_source_byte_budget() {
+        let root = tmp_project();
+        for index in 0..20 {
+            write_page(
+                &root,
+                &format!("raw/sources/{index:02}.pdf"),
+                "binary source without a preprocessing cache",
+            );
+        }
+        write_page(&root, "raw/sources/z.txt", "x123");
+
+        let out = search_sources_inner(
+            root.to_string_lossy().to_string(),
+            "x123".into(),
+            20,
+            true,
+            SourceSearchCancellation::default(),
+            SourceSearchLimits {
+                max_total_bytes: 5,
+                ..SourceSearchLimits::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(out.results.len(), 1);
+        assert!(!out.truncated);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_search_honors_time_budget() {
+        let root = tmp_project();
+        write_page(&root, "raw/sources/notes.txt", "exact source wording");
+
+        let out = search_sources_inner(
+            root.to_string_lossy().to_string(),
+            "exact source wording".into(),
+            20,
+            true,
+            SourceSearchCancellation::default(),
+            SourceSearchLimits {
+                max_duration: Duration::ZERO,
+                ..SourceSearchLimits::default()
+            },
+        )
+        .unwrap();
+
+        assert!(out.results.is_empty());
+        assert_eq!(out.truncation_reason.as_deref(), Some("time_budget"));
         let _ = fs::remove_dir_all(root);
     }
 }

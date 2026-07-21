@@ -30,6 +30,8 @@ export async function resetProjectState(): Promise<void> {
     ingestSource: null,
     isStreaming: false,
     streamingContent: "",
+    streamingRequestId: null,
+    streamingConversationId: null,
     useWebSearch: false,
     useAnyTxtSearch: false,
     agentMode: "standard",

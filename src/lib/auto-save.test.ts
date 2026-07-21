@@ -32,6 +32,7 @@ import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import type { ReviewItem } from "@/stores/review-store"
+import { browserRetrievalMode } from "@/components/chat/chat-input"
 
 function setProjectPath(path: string | null): void {
   useWikiStore.setState({ project: path ? ({ id: "p", name: "p", path } as never) : null })
@@ -172,5 +173,18 @@ describe("auto-save project-switch guard", () => {
       selectedSkills: ["reviewer"],
       disabledSkills: [],
     })
+  })
+
+  it("persists Agent smart mode after the browser applies its local fallback", async () => {
+    setProjectPath("/proj/A")
+    useChatStore.setState({ retrievalMode: "smart" })
+
+    expect(browserRetrievalMode(useChatStore.getState().retrievalMode)).toBe("standard")
+    await flushAndSuspendAutoSave()
+
+    expect(saveChatPreferences).toHaveBeenCalledWith(
+      "/proj/A",
+      expect.objectContaining({ retrievalMode: "smart" }),
+    )
   })
 })

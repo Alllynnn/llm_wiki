@@ -20,8 +20,39 @@ import { anyTxtSearchSmart, hasConfiguredAnyTxt } from "@/lib/anytxt-search"
 import { resolveSearchConfig, webSearch, type WebSearchResult } from "@/lib/web-search"
 import { searchFaithfulSources } from "@/lib/faithful-source-search"
 
-// Store the page mapping from the last query so SourceFilesBar can show which pages were cited
-export let lastQueryPages: { title: string; path: string }[] = []
+interface LastQueryContext {
+  projectPath: string
+  conversationId: string
+  pages: { title: string; path: string }[]
+}
+
+// Legacy numeric-citation fallback for messages that predate saved references.
+// The lookup must match both project and conversation before exposing pages.
+let lastQueryContext: LastQueryContext | null = null
+
+export function getLastQueryPages(
+  projectPath: string,
+  conversationId: string,
+): { title: string; path: string }[] {
+  if (!lastQueryContext) return []
+  if (lastQueryContext.projectPath !== normalizePath(projectPath)) return []
+  if (lastQueryContext.conversationId !== conversationId) return []
+  return lastQueryContext.pages
+}
+
+let chatRequestSequence = 0
+
+function nextChatRequestId(): string {
+  chatRequestSequence += 1
+  return `chat-${Date.now()}-${chatRequestSequence}`
+}
+
+interface ActiveChatRequest {
+  id: string
+  conversationId: string
+  projectPath: string
+  controller: AbortController
+}
 
 function formatExternalSearchContext(results: WebSearchResult[]): string {
   if (results.length === 0) return ""
@@ -143,11 +174,13 @@ export function ChatPanel() {
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   const isStreaming = useChatStore((s) => s.isStreaming)
   const streamingContent = useChatStore((s) => s.streamingContent)
+  const streamingConversationId = useChatStore((s) => s.streamingConversationId)
   const mode = useChatStore((s) => s.mode)
-  const addMessage = useChatStore((s) => s.addMessage)
-  const setStreaming = useChatStore((s) => s.setStreaming)
-  const appendStreamToken = useChatStore((s) => s.appendStreamToken)
-  const finalizeStream = useChatStore((s) => s.finalizeStream)
+  const addMessageToConversation = useChatStore((s) => s.addMessageToConversation)
+  const startStreamForConversation = useChatStore((s) => s.startStreamForConversation)
+  const appendStreamTokenForRequest = useChatStore((s) => s.appendStreamTokenForRequest)
+  const endStreamForRequest = useChatStore((s) => s.endStreamForRequest)
+  const finalizeStreamForRequest = useChatStore((s) => s.finalizeStreamForRequest)
   const createConversation = useChatStore((s) => s.createConversation)
   const removeLastAssistantMessage = useChatStore((s) => s.removeLastAssistantMessage)
   const maxHistoryMessages = useChatStore((s) => s.maxHistoryMessages)
@@ -167,7 +200,7 @@ export function ChatPanel() {
   const imageInputAvailable = supportsImageInput(llmConfig)
   const setFileTree = useWikiStore((s) => s.setFileTree)
 
-  const abortRef = useRef<AbortController | null>(null)
+  const activeRequestRef = useRef<ActiveChatRequest | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -178,6 +211,19 @@ export function ChatPanel() {
       container.scrollTop = container.scrollHeight
     }
   }, [activeMessages, streamingContent])
+
+  const currentProjectPath = project ? normalizePath(project.path) : ""
+
+  useEffect(() => {
+    const request = activeRequestRef.current
+    if (request && request.projectPath !== currentProjectPath) {
+      request.controller.abort()
+    }
+  }, [currentProjectPath])
+
+  useEffect(() => () => {
+    activeRequestRef.current?.controller.abort()
+  }, [])
 
   const handleSend = useCallback(
     async (
@@ -196,14 +242,35 @@ export function ChatPanel() {
       }
 
       const effectiveImages = options.retrievalMode === "faithful" ? [] : images
-      addMessage("user", text, effectiveImages, options)
+      addMessageToConversation(convId, "user", text, effectiveImages, undefined, options)
+      const requestId = nextChatRequestId()
+      const originProjectPath = project ? normalizePath(project.path) : ""
       const controller = new AbortController()
-      abortRef.current = controller
-      setStreaming(true)
+      activeRequestRef.current = {
+        id: requestId,
+        conversationId: convId,
+        projectPath: originProjectPath,
+        controller,
+      }
+      startStreamForConversation(requestId, convId)
 
+      const ownsRequest = () => activeRequestRef.current?.id === requestId
+      const projectStillMatches = () => {
+        const current = useWikiStore.getState().project
+        return (current ? normalizePath(current.path) : "") === originProjectPath
+      }
+      const canPublish = () => ownsRequest() && projectStillMatches()
+      const releaseRequest = () => {
+        if (!ownsRequest()) return
+        endStreamForRequest(requestId)
+        activeRequestRef.current = null
+      }
+
+      try {
       // Build system prompt with wiki context using graph-enhanced retrieval
       const systemMessages: LLMMessage[] = []
       let queryRefs: MessageReference[] = []
+      let queryPages: { title: string; path: string }[] = []
       let langReminder: string | undefined
       // Pure greetings ("hi", "你好", "嗨") don't warrant running the whole
       // retrieval pipeline — it's slow, costs context, and drags in random
@@ -241,19 +308,20 @@ export function ChatPanel() {
           try {
             sourceResults = await searchFaithfulSources(pp, text, 12, controller.signal)
           } catch (error) {
-            if (controller.signal.aborted) {
-              setStreaming(false)
-              abortRef.current = null
+            if (controller.signal.aborted || !canPublish()) {
+              releaseRequest()
               return
             }
             const message = error instanceof Error ? error.message : String(error)
-            finalizeStream(`Error: Failed to search original sources: ${message}`, undefined)
-            abortRef.current = null
+            finalizeStreamForRequest(
+              requestId,
+              `Error: Failed to search original sources: ${message}`,
+            )
+            activeRequestRef.current = null
             return
           }
-          if (controller.signal.aborted) {
-            setStreaming(false)
-            abortRef.current = null
+          if (controller.signal.aborted || !canPublish()) {
+            releaseRequest()
             return
           }
           let usedChars = 0
@@ -297,7 +365,7 @@ export function ChatPanel() {
             ].join("\n"),
           })
           langReminder = buildLanguageReminder(text)
-          lastQueryPages = sourcePages.map(({ title, path }) => ({ title, path }))
+          queryPages = sourcePages.map(({ title, path }) => ({ title, path }))
           queryRefs = sourcePages.map((source) => ({
             title: source.title,
             path: source.path,
@@ -499,7 +567,7 @@ export function ChatPanel() {
         // (after history so it's the last system instruction the LLM sees).
         langReminder = buildLanguageReminder(text)
 
-        lastQueryPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
+        queryPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
         const externalRefs: MessageReference[] = externalSearchResults.map((result) => ({
           title: result.title,
           path: result.url,
@@ -508,13 +576,24 @@ export function ChatPanel() {
           url: result.url,
           snippet: result.snippet,
         }))
-        queryRefs = [...lastQueryPages.map((page) => ({ ...page, kind: "wiki" as const })), ...externalRefs]
+        queryRefs = [...queryPages.map((page) => ({ ...page, kind: "wiki" as const })), ...externalRefs]
         }
       }
 
+      if (controller.signal.aborted || !canPublish()) {
+        releaseRequest()
+        return
+      }
+      lastQueryContext = {
+        projectPath: originProjectPath,
+        conversationId: convId,
+        pages: queryPages,
+      }
+
       // ── Conversation history with count limit ────────────────
-      // Only include messages from the active conversation, last N messages
-      const activeConvMessages = useChatStore.getState().getActiveMessages()
+      // Only include messages from the conversation that started this request.
+      const activeConvMessages = useChatStore.getState().messages
+        .filter((message) => message.conversationId === convId)
         .filter((m) => m.role === "user" || m.role === "assistant")
         .slice(-maxHistoryMessages)
 
@@ -567,21 +646,21 @@ export function ChatPanel() {
       let thinkingOpen = false
 
       const appendReasoning = (token: string) => {
-        if (!token) return
+        if (!token || !canPublish()) return
         if (!thinkingOpen) {
           thinkingOpen = true
           accumulated += "<think>"
-          appendStreamToken("<think>")
+          appendStreamTokenForRequest(requestId, "<think>")
         }
         accumulated += token
-        appendStreamToken(token)
+        appendStreamTokenForRequest(requestId, token)
       }
 
       const closeReasoning = () => {
         if (!thinkingOpen) return
         thinkingOpen = false
         accumulated += "</think>"
-        appendStreamToken("</think>")
+        appendStreamTokenForRequest(requestId, "</think>")
       }
 
       await streamChat(
@@ -589,33 +668,48 @@ export function ChatPanel() {
         llmMessages,
         {
           onToken: (token) => {
+            if (!canPublish()) return
             closeReasoning()
             accumulated += token
-            appendStreamToken(token)
+            appendStreamTokenForRequest(requestId, token)
           },
           onReasoningToken: appendReasoning,
           onDone: () => {
+            if (!canPublish() || controller.signal.aborted) {
+              releaseRequest()
+              return
+            }
             closeReasoning()
-            finalizeStream(accumulated, queryRefs)
-            abortRef.current = null
+            finalizeStreamForRequest(requestId, accumulated, queryRefs)
+            activeRequestRef.current = null
             // save-worthy detection removed — user has direct "Save to Wiki" button on each message
           },
           onError: (err) => {
-            finalizeStream(`Error: ${err.message}`, undefined)
-            abortRef.current = null
+            if (!canPublish() || controller.signal.aborted) {
+              releaseRequest()
+              return
+            }
+            finalizeStreamForRequest(requestId, `Error: ${err.message}`)
+            activeRequestRef.current = null
           },
         },
         controller.signal,
       )
+      } catch (error) {
+        if (controller.signal.aborted || !canPublish()) return
+        const message = error instanceof Error ? error.message : String(error)
+        finalizeStreamForRequest(requestId, `Error: ${message}`)
+        activeRequestRef.current = null
+      } finally {
+        releaseRequest()
+      }
     },
-    [llmConfig, searchApiConfig, addMessage, setStreaming, appendStreamToken, finalizeStream, createConversation, maxHistoryMessages],
+    [llmConfig, searchApiConfig, addMessageToConversation, startStreamForConversation, appendStreamTokenForRequest, endStreamForRequest, finalizeStreamForRequest, createConversation, maxHistoryMessages, project],
   )
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort()
-    abortRef.current = null
-    setStreaming(false)
-  }, [setStreaming])
+    activeRequestRef.current?.controller.abort()
+  }, [])
 
   const handleRegenerate = useCallback(async () => {
     if (isStreaming) return
@@ -705,7 +799,9 @@ export function ChatPanel() {
                     />
                   )
                 })}
-                {isStreaming && <StreamingMessage content={streamingContent} />}
+                {isStreaming && streamingConversationId === activeConversationId && (
+                  <StreamingMessage content={streamingContent} />
+                )}
                 <div ref={bottomRef} />
               </div>
             </div>

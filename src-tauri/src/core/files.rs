@@ -316,27 +316,49 @@ fn read_cache(original: &Path) -> Option<String> {
 ///
 /// Source search uses this for binary documents so a read-only query never
 /// parses or rewrites user files, and never quotes stale extracted text.
-pub(crate) fn read_preprocessed_cache(original: &Path, max_bytes: u64) -> Option<String> {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LimitedTextRead {
+    Content(String),
+    TooLarge,
+    Unavailable(u64),
+}
+
+pub(crate) fn read_preprocessed_cache(original: &Path, max_bytes: u64) -> LimitedTextRead {
     let cache_path = cache_path_for(original);
-    let original_modified = fs::metadata(original).ok()?.modified().ok()?;
-    let cache_modified = fs::metadata(&cache_path).ok()?.modified().ok()?;
-    (cache_modified >= original_modified)
-        .then(|| read_utf8_file_limited(&cache_path, max_bytes))?
+    let Ok(original_modified) = fs::metadata(original).and_then(|meta| meta.modified()) else {
+        return LimitedTextRead::Unavailable(0);
+    };
+    let Ok(cache_modified) = fs::metadata(&cache_path).and_then(|meta| meta.modified()) else {
+        return LimitedTextRead::Unavailable(0);
+    };
+    if cache_modified < original_modified {
+        return LimitedTextRead::Unavailable(0);
+    }
+    read_utf8_file_limited(&cache_path, max_bytes)
 }
 
 /// Read at most `max_bytes` from one open handle and reject files that have
 /// more data. Reading `max + 1` makes the limit hold even when a file grows
 /// concurrently after it was discovered by the directory walk.
-pub(crate) fn read_utf8_file_limited(path: &Path, max_bytes: u64) -> Option<String> {
+pub(crate) fn read_utf8_file_limited(path: &Path, max_bytes: u64) -> LimitedTextRead {
     let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024) as usize);
-    let file = fs::File::open(path).ok()?;
-    file.take(max_bytes.saturating_add(1))
+    let Ok(file) = fs::File::open(path) else {
+        return LimitedTextRead::Unavailable(0);
+    };
+    if file
+        .take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > max_bytes {
-        return None;
+        .is_err()
+    {
+        return LimitedTextRead::Unavailable(bytes.len() as u64);
     }
-    String::from_utf8(bytes).ok()
+    if bytes.len() as u64 > max_bytes {
+        return LimitedTextRead::TooLarge;
+    }
+    match String::from_utf8(bytes) {
+        Ok(content) => LimitedTextRead::Content(content),
+        Err(error) => LimitedTextRead::Unavailable(error.into_bytes().len() as u64),
+    }
 }
 
 pub(crate) fn write_cache(original: &Path, text: &str) -> Result<(), String> {
@@ -1377,8 +1399,11 @@ mod tests {
         ));
         fs::write(&path, b"12345").unwrap();
 
-        assert_eq!(read_utf8_file_limited(&path, 5).as_deref(), Some("12345"));
-        assert_eq!(read_utf8_file_limited(&path, 4), None);
+        assert_eq!(
+            read_utf8_file_limited(&path, 5),
+            LimitedTextRead::Content("12345".to_string())
+        );
+        assert_eq!(read_utf8_file_limited(&path, 4), LimitedTextRead::TooLarge);
         let _ = fs::remove_file(path);
     }
 

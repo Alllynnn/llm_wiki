@@ -11,7 +11,7 @@ import {
 } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { readFile, writeFile, listDirectory } from "@/commands/fs"
-import { lastQueryPages } from "@/components/chat/chat-panel"
+import { getLastQueryPages } from "@/components/chat/chat-panel"
 import type { DisplayMessage, MessageReference } from "@/stores/chat-store"
 import type { FileNode } from "@/types/wiki"
 
@@ -119,7 +119,13 @@ function ChatMessageImpl({ message, isLastAssistant, onRegenerate }: ChatMessage
             )}
           </div>
         )}
-        {isAssistant && <CitedReferencesPanel content={message.content} savedReferences={message.references} />}
+        {isAssistant && (
+          <CitedReferencesPanel
+            content={message.content}
+            conversationId={message.conversationId}
+            savedReferences={message.references}
+          />
+        )}
         {isAssistant && hovered && (
           <div className="flex items-center gap-1">
             <CopyButton content={message.content} />
@@ -351,7 +357,15 @@ interface CitedImageInfo {
   firstUrl: string | null
 }
 
-function CitedReferencesPanel({ content, savedReferences }: { content: string; savedReferences?: CitedPage[] }) {
+function CitedReferencesPanel({
+  content,
+  conversationId,
+  savedReferences,
+}: {
+  content: string
+  conversationId: string
+  savedReferences?: CitedPage[]
+}) {
   const project = useWikiStore((s) => s.project)
   const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
   const setFileContent = useWikiStore((s) => s.setFileContent)
@@ -371,8 +385,11 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
   // Use saved references first (persisted with message), fall back to dynamic extraction
   const citedPages = useMemo(() => {
     if (savedReferences && savedReferences.length > 0) return savedReferences
-    return extractCitedPages(content)
-  }, [content, savedReferences])
+    const fallbackPages = project
+      ? getLastQueryPages(project.path, conversationId)
+      : []
+    return extractCitedPages(content, fallbackPages)
+  }, [content, conversationId, project, savedReferences])
 
   // Async-fetch each cited page's content once and extract image
   // info: count + first URL. Done in parallel; failures are
@@ -633,7 +650,7 @@ function CitedReferencesPanel({ content, savedReferences }: { content: string; s
  * Extract cited wiki pages from the hidden <!-- cited: 1, 3, 5 --> comment.
  * Maps page numbers back to the pages that were sent to the LLM.
  */
-function extractCitedPages(text: string): CitedPage[] {
+function extractCitedPages(text: string, lastQueryPages: CitedPage[]): CitedPage[] {
   const citedMatch = text.match(/<!--\s*cited:\s*(.+?)\s*-->/)
   if (citedMatch && lastQueryPages.length > 0) {
     const numbers = citedMatch[1]
