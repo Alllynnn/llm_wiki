@@ -18,9 +18,48 @@ import { isGreeting } from "@/lib/greeting-detector"
 import { computeContextBudget } from "@/lib/context-budget"
 import { anyTxtSearchSmart, hasConfiguredAnyTxt } from "@/lib/anytxt-search"
 import { resolveSearchConfig, webSearch, type WebSearchResult } from "@/lib/web-search"
+import { searchFaithfulSources } from "@/lib/faithful-source-search"
 
-// Store the page mapping from the last query so SourceFilesBar can show which pages were cited
-export let lastQueryPages: { title: string; path: string }[] = []
+interface LastQueryContext {
+  projectPath: string
+  conversationId: string
+  pages: { title: string; path: string }[]
+}
+
+// Legacy numeric-citation fallback for messages that predate saved references.
+// The lookup must match both project and conversation before exposing pages.
+let lastQueryContext: LastQueryContext | null = null
+
+export function getLastQueryPages(
+  projectPath: string,
+  conversationId: string,
+): { title: string; path: string }[] {
+  if (!lastQueryContext) return []
+  if (lastQueryContext.projectPath !== normalizePath(projectPath)) return []
+  if (lastQueryContext.conversationId !== conversationId) return []
+  return lastQueryContext.pages
+}
+
+let chatRequestSequence = 0
+
+function nextChatRequestId(): string {
+  chatRequestSequence += 1
+  return `chat-${Date.now()}-${chatRequestSequence}`
+}
+
+interface ActiveChatRequest {
+  id: string
+  conversationId: string
+  projectPath: string
+  controller: AbortController
+}
+
+interface ChatSendTarget {
+  conversationId: string
+  projectPath: string
+  existingUserMessageId: string
+  assistantMessageId: string
+}
 
 function formatExternalSearchContext(results: WebSearchResult[]): string {
   if (results.length === 0) return ""
@@ -142,14 +181,18 @@ export function ChatPanel() {
   const activeConversationId = useChatStore((s) => s.activeConversationId)
   const isStreaming = useChatStore((s) => s.isStreaming)
   const streamingContent = useChatStore((s) => s.streamingContent)
+  const streamingConversationId = useChatStore((s) => s.streamingConversationId)
   const mode = useChatStore((s) => s.mode)
-  const addMessage = useChatStore((s) => s.addMessage)
-  const setStreaming = useChatStore((s) => s.setStreaming)
-  const appendStreamToken = useChatStore((s) => s.appendStreamToken)
-  const finalizeStream = useChatStore((s) => s.finalizeStream)
+  const addMessageToConversation = useChatStore((s) => s.addMessageToConversation)
+  const startStreamForConversation = useChatStore((s) => s.startStreamForConversation)
+  const appendStreamTokenForRequest = useChatStore((s) => s.appendStreamTokenForRequest)
+  const endStreamForRequest = useChatStore((s) => s.endStreamForRequest)
+  const finalizeStreamForRequest = useChatStore((s) => s.finalizeStreamForRequest)
   const createConversation = useChatStore((s) => s.createConversation)
-  const removeLastAssistantMessage = useChatStore((s) => s.removeLastAssistantMessage)
+  const startConversationTurnRegeneration = useChatStore((s) => s.startConversationTurnRegeneration)
   const maxHistoryMessages = useChatStore((s) => s.maxHistoryMessages)
+  const retrievalMode = useChatStore((s) => s.retrievalMode)
+  const setRetrievalMode = useChatStore((s) => s.setRetrievalMode)
 
   // Derive active messages via selector to re-render on message changes
   const allMessages = useChatStore((s) => s.messages)
@@ -164,7 +207,7 @@ export function ChatPanel() {
   const imageInputAvailable = supportsImageInput(llmConfig)
   const setFileTree = useWikiStore((s) => s.setFileTree)
 
-  const abortRef = useRef<AbortController | null>(null)
+  const activeRequestRef = useRef<ActiveChatRequest | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -176,36 +219,95 @@ export function ChatPanel() {
     }
   }, [activeMessages, streamingContent])
 
+  const currentProjectPath = project ? normalizePath(project.path) : ""
+
+  useEffect(() => {
+    const request = activeRequestRef.current
+    if (request && request.projectPath !== currentProjectPath) {
+      request.controller.abort()
+    }
+  }, [currentProjectPath])
+
+  useEffect(() => () => {
+    activeRequestRef.current?.controller.abort()
+  }, [])
+
   const handleSend = useCallback(
     async (
       text: string,
       images: MessageImage[] = [],
-      options: ChatSendOptions = { useWebSearch: false, useAnyTxtSearch: false },
+      options: ChatSendOptions = {
+        useWebSearch: false,
+        useAnyTxtSearch: false,
+        retrievalMode: "standard",
+      },
+      target?: ChatSendTarget,
     ) => {
-      // Auto-create a conversation if none is active
-      let convId = useChatStore.getState().activeConversationId
+      const requestProject = useWikiStore.getState().project
+      const currentRequestProjectPath = requestProject ? normalizePath(requestProject.path) : ""
+      if (target && currentRequestProjectPath !== target.projectPath) return
+
+      // Auto-create a conversation if none is active. Regeneration always
+      // supplies the conversation and reuses its existing user message.
+      let convId = target?.conversationId ?? useChatStore.getState().activeConversationId
       if (!convId) {
         convId = createConversation()
       }
 
-      addMessage("user", text, images)
-      setStreaming(true)
+      const effectiveImages = options.retrievalMode === "faithful" ? [] : images
+      if (!target) {
+        addMessageToConversation(convId, "user", text, effectiveImages, undefined, options)
+      }
+      const requestId = nextChatRequestId()
+      const originProjectPath = currentRequestProjectPath
+      const controller = new AbortController()
+      if (target) {
+        const started = startConversationTurnRegeneration(
+          requestId,
+          convId,
+          target.existingUserMessageId,
+          target.assistantMessageId,
+        )
+        if (!started) return
+      } else {
+        startStreamForConversation(requestId, convId)
+      }
+      activeRequestRef.current = {
+        id: requestId,
+        conversationId: convId,
+        projectPath: originProjectPath,
+        controller,
+      }
 
+      const ownsRequest = () => activeRequestRef.current?.id === requestId
+      const projectStillMatches = () => {
+        const current = useWikiStore.getState().project
+        return (current ? normalizePath(current.path) : "") === originProjectPath
+      }
+      const canPublish = () => ownsRequest() && projectStillMatches()
+      const releaseRequest = () => {
+        if (!ownsRequest()) return
+        endStreamForRequest(requestId)
+        activeRequestRef.current = null
+      }
+
+      try {
       // Build system prompt with wiki context using graph-enhanced retrieval
       const systemMessages: LLMMessage[] = []
       let queryRefs: MessageReference[] = []
+      let queryPages: { title: string; path: string }[] = []
       let langReminder: string | undefined
       // Pure greetings ("hi", "你好", "嗨") don't warrant running the whole
       // retrieval pipeline — it's slow, costs context, and drags in random
       // wiki pages the user clearly didn't ask about. Short-circuit with a
       // minimal system prompt and let the model reply conversationally.
       const greetingOnly = isGreeting(text)
-      if (project && greetingOnly) {
+      if (requestProject && greetingOnly && options.retrievalMode !== "faithful") {
         const outLang = getOutputLanguage(text)
         systemMessages.push({
           role: "system",
           content: [
-            `You are a wiki assistant for the project "${project.name}".`,
+            `You are a wiki assistant for the project "${requestProject.name}".`,
             "The user sent a casual greeting — reply briefly and naturally, in one or two sentences.",
             "Do NOT invent wiki content or pretend to have retrieved pages. Invite the user to ask a concrete question if they want information from the wiki.",
             "",
@@ -213,9 +315,8 @@ export function ChatPanel() {
           ].join("\n"),
         })
         // Skip retrieval; queryRefs stays empty so no "Sources" chip is shown.
-      } else if (project) {
-        const pp = normalizePath(project.path)
-        const dataVersion = useWikiStore.getState().dataVersion
+      } else if (requestProject) {
+        const pp = normalizePath(requestProject.path)
 
         // ── Budget allocation (see context-budget.ts) ─────────
         // Page budget scales with the LLM's context window; we now
@@ -226,6 +327,79 @@ export function ChatPanel() {
           pageBudget: PAGE_BUDGET,
           maxPageSize: MAX_PAGE_SIZE,
         } = computeContextBudget(llmConfig.maxContextSize)
+
+        if (options.retrievalMode === "faithful") {
+          let sourceResults: Awaited<ReturnType<typeof searchFaithfulSources>>
+          try {
+            sourceResults = await searchFaithfulSources(pp, text, 12, controller.signal)
+          } catch (error) {
+            if (controller.signal.aborted || !canPublish()) {
+              releaseRequest()
+              return
+            }
+            const message = error instanceof Error ? error.message : String(error)
+            finalizeStreamForRequest(
+              requestId,
+              `Error: Failed to search original sources: ${message}`,
+            )
+            activeRequestRef.current = null
+            return
+          }
+          if (controller.signal.aborted || !canPublish()) {
+            releaseRequest()
+            return
+          }
+          let usedChars = 0
+          const sourcePages = sourceResults.flatMap((result) => {
+            if (!result.content || usedChars >= PAGE_BUDGET) return []
+            const remaining = PAGE_BUDGET - usedChars
+            const content = result.content.slice(0, Math.min(MAX_PAGE_SIZE, remaining))
+            if (!content.trim()) return []
+            usedChars += content.length
+            return [{
+              title: result.title,
+              path: getRelativePath(result.path, pp),
+              content,
+              snippet: result.snippet,
+            }]
+          })
+          const sourcesContext = sourcePages.length > 0
+            ? sourcePages.map((source, index) => [
+                `### [${index + 1}] ${source.title}`,
+                `Path: ${source.path}`,
+                "",
+                source.content,
+              ].join("\n")).join("\n\n---\n\n")
+            : "(No matching original source excerpts were found.)"
+          const outLang = getOutputLanguage(text)
+
+          systemMessages.push({
+            role: "system",
+            content: [
+              `You are a source-faithful assistant for the project "${requestProject.name}".`,
+              "Answer only from the original source excerpts below.",
+              "Do not use generated wiki pages, graph context, web results, AnyTXT results, conversation background knowledge, or unsupported inference as evidence.",
+              "Cite the source number beside every factual claim and preserve quoted wording exactly.",
+              "If the excerpts are insufficient, state that limitation instead of reconstructing or guessing.",
+              "Use markdown formatting for clarity.",
+              "",
+              `## Original Source Excerpts\n\n${sourcesContext}`,
+              "",
+              `## ⚠️ MANDATORY OUTPUT LANGUAGE: ${outLang}`,
+              `Write the entire response in ${outLang}; source language does not override this instruction.`,
+            ].join("\n"),
+          })
+          langReminder = buildLanguageReminder(text)
+          queryPages = sourcePages.map(({ title, path }) => ({ title, path }))
+          queryRefs = sourcePages.map((source) => ({
+            title: source.title,
+            path: source.path,
+            kind: "wiki" as const,
+            source: "Raw Source",
+            snippet: source.snippet,
+          }))
+        } else {
+          const dataVersion = useWikiStore.getState().dataVersion
 
         const [rawIndex, purpose] = await Promise.all([
           readFile(`${pp}/wiki/index.md`).catch(() => ""),
@@ -418,7 +592,7 @@ export function ChatPanel() {
         // (after history so it's the last system instruction the LLM sees).
         langReminder = buildLanguageReminder(text)
 
-        lastQueryPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
+        queryPages = relevantPages.map((p) => ({ title: p.title, path: p.path }))
         const externalRefs: MessageReference[] = externalSearchResults.map((result) => ({
           title: result.title,
           path: result.url,
@@ -427,12 +601,24 @@ export function ChatPanel() {
           url: result.url,
           snippet: result.snippet,
         }))
-        queryRefs = [...lastQueryPages.map((page) => ({ ...page, kind: "wiki" as const })), ...externalRefs]
+        queryRefs = [...queryPages.map((page) => ({ ...page, kind: "wiki" as const })), ...externalRefs]
+        }
+      }
+
+      if (controller.signal.aborted || !canPublish()) {
+        releaseRequest()
+        return
+      }
+      lastQueryContext = {
+        projectPath: originProjectPath,
+        conversationId: convId,
+        pages: queryPages,
       }
 
       // ── Conversation history with count limit ────────────────
-      // Only include messages from the active conversation, last N messages
-      const activeConvMessages = useChatStore.getState().getActiveMessages()
+      // Only include messages from the conversation that started this request.
+      const activeConvMessages = useChatStore.getState().messages
+        .filter((message) => message.conversationId === convId)
         .filter((m) => m.role === "user" || m.role === "assistant")
         .slice(-maxHistoryMessages)
 
@@ -444,7 +630,9 @@ export function ChatPanel() {
       // "System message must be at the beginning." (HTTP 400). OpenAI and
       // Anthropic are more lenient, but keeping a single system at the top
       // is the safest shape across every OpenAI-compatible backend.
-      const historyMessages = chatMessagesToLLM(activeConvMessages)
+      const historyMessages: LLMMessage[] = options.retrievalMode === "faithful"
+        ? [{ role: "user", content: text }]
+        : chatMessagesToLLM(activeConvMessages)
       let llmMessages: LLMMessage[] = [...systemMessages, ...historyMessages]
       if (langReminder && historyMessages.length > 0) {
         const lastIdx = llmMessages.length - 1
@@ -479,28 +667,25 @@ export function ChatPanel() {
         }
       }
 
-      const controller = new AbortController()
-      abortRef.current = controller
-
       let accumulated = ""
       let thinkingOpen = false
 
       const appendReasoning = (token: string) => {
-        if (!token) return
+        if (!token || !canPublish()) return
         if (!thinkingOpen) {
           thinkingOpen = true
           accumulated += "<think>"
-          appendStreamToken("<think>")
+          appendStreamTokenForRequest(requestId, "<think>")
         }
         accumulated += token
-        appendStreamToken(token)
+        appendStreamTokenForRequest(requestId, token)
       }
 
       const closeReasoning = () => {
         if (!thinkingOpen) return
         thinkingOpen = false
         accumulated += "</think>"
-        appendStreamToken("</think>")
+        appendStreamTokenForRequest(requestId, "</think>")
       }
 
       await streamChat(
@@ -508,59 +693,89 @@ export function ChatPanel() {
         llmMessages,
         {
           onToken: (token) => {
+            if (!canPublish()) return
             closeReasoning()
             accumulated += token
-            appendStreamToken(token)
+            appendStreamTokenForRequest(requestId, token)
           },
           onReasoningToken: appendReasoning,
           onDone: () => {
+            if (!canPublish() || controller.signal.aborted) {
+              releaseRequest()
+              return
+            }
             closeReasoning()
-            finalizeStream(accumulated, queryRefs)
-            abortRef.current = null
+            finalizeStreamForRequest(requestId, accumulated, queryRefs)
+            activeRequestRef.current = null
             // save-worthy detection removed — user has direct "Save to Wiki" button on each message
           },
           onError: (err) => {
-            finalizeStream(`Error: ${err.message}`, undefined)
-            abortRef.current = null
+            if (!canPublish() || controller.signal.aborted) {
+              releaseRequest()
+              return
+            }
+            finalizeStreamForRequest(requestId, `Error: ${err.message}`)
+            activeRequestRef.current = null
           },
         },
         controller.signal,
       )
+      } catch (error) {
+        if (controller.signal.aborted || !canPublish()) return
+        const message = error instanceof Error ? error.message : String(error)
+        finalizeStreamForRequest(requestId, `Error: ${message}`)
+        activeRequestRef.current = null
+      } finally {
+        releaseRequest()
+      }
     },
-    [llmConfig, searchApiConfig, addMessage, setStreaming, appendStreamToken, finalizeStream, createConversation, maxHistoryMessages],
+    [llmConfig, searchApiConfig, addMessageToConversation, startStreamForConversation, startConversationTurnRegeneration, appendStreamTokenForRequest, endStreamForRequest, finalizeStreamForRequest, createConversation, maxHistoryMessages],
   )
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort()
-    abortRef.current = null
+    activeRequestRef.current?.controller.abort()
   }, [])
 
   const handleRegenerate = useCallback(async () => {
     if (isStreaming) return
-    // Find the last user message in active conversation
-    const active = useChatStore.getState().getActiveMessages()
-    const lastUserMsg = [...active].reverse().find((m) => m.role === "user")
-    if (!lastUserMsg) return
-    // Remove the last assistant reply, then re-send
-    removeLastAssistantMessage()
-    // Small delay to let state update
-    await new Promise((r) => setTimeout(r, 50))
-    // Trigger send with the same text (handleSend will add a new user message,
-    // so also remove the original to avoid duplication)
-    // Actually: just call handleSend — but it adds a user message. To avoid dupe,
-    // we remove the last user message too and let handleSend re-add it.
     const store = useChatStore.getState()
-    const updatedActive = store.getActiveMessages()
-    const lastUser = [...updatedActive].reverse().find((m) => m.role === "user")
-    if (lastUser) {
-      useChatStore.setState((s) => ({
-        messages: s.messages.filter((m) => m.id !== lastUser.id),
-      }))
+    const conversationId = store.activeConversationId
+    const currentProject = useWikiStore.getState().project
+    if (!conversationId || !currentProject) return
+    const projectPath = normalizePath(currentProject.path)
+    const conversationMessages = store.messages.filter(
+      (message) => message.conversationId === conversationId,
+    )
+    const reversedAssistantIndex = [...conversationMessages]
+      .reverse()
+      .findIndex((message) => message.role === "assistant")
+    if (reversedAssistantIndex < 0) return
+    const assistantIndex = conversationMessages.length - 1 - reversedAssistantIndex
+    const assistantMessage = conversationMessages[assistantIndex]
+    const userMessage = [...conversationMessages.slice(0, assistantIndex)]
+      .reverse()
+      .find((message) => message.role === "user")
+    if (!assistantMessage || !userMessage) return
+
+    const originalOptions: ChatSendOptions = {
+      retrievalMode: userMessage.retrievalMode ?? "standard",
+      useWebSearch: userMessage.useWebSearch ?? false,
+      useAnyTxtSearch: userMessage.useAnyTxtSearch ?? false,
     }
-    // Re-send with the original text AND images so a regenerated turn
-    // keeps the same vision context.
-    handleSend(lastUserMsg.content, lastUserMsg.images ?? [])
-  }, [isStreaming, removeLastAssistantMessage, handleSend])
+    // Re-send with the original retrieval policy. Faithful turns remain
+    // text-only; other modes retain their original vision context.
+    await handleSend(
+      userMessage.content,
+      originalOptions.retrievalMode === "faithful" ? [] : (userMessage.images ?? []),
+      originalOptions,
+      {
+        conversationId,
+        projectPath,
+        existingUserMessageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+      },
+    )
+  }, [isStreaming, handleSend])
 
   const handleWriteToWiki = useCallback(async () => {
     if (!project) return
@@ -614,7 +829,9 @@ export function ChatPanel() {
                     />
                   )
                 })}
-                {isStreaming && <StreamingMessage content={streamingContent} />}
+                {isStreaming && streamingConversationId === activeConversationId && (
+                  <StreamingMessage content={streamingContent} />
+                )}
                 <div ref={bottomRef} />
               </div>
             </div>
@@ -639,6 +856,8 @@ export function ChatPanel() {
           onSend={handleSend}
           onStop={handleStop}
           isStreaming={isStreaming}
+          retrievalMode={retrievalMode}
+          onRetrievalModeChange={setRetrievalMode}
           anyTxtAvailable={anyTxtAvailable}
           imageInputAvailable={imageInputAvailable}
           placeholder={

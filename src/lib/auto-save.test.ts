@@ -32,6 +32,7 @@ import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import type { ReviewItem } from "@/stores/review-store"
+import { browserRetrievalMode } from "@/components/chat/chat-input"
 
 function setProjectPath(path: string | null): void {
   useWikiStore.setState({ project: path ? ({ id: "p", name: "p", path } as never) : null })
@@ -151,6 +152,33 @@ describe("auto-save project-switch guard", () => {
     expect(saveReviewItems).toHaveBeenCalled()
   })
 
+  it("does not schedule a half-finished chat save when regeneration starts", () => {
+    setProjectPath("/proj/A")
+    useChatStore.setState({
+      conversations: [{ id: "c1", title: "One", createdAt: 1, updatedAt: 1 }],
+      activeConversationId: "c1",
+      messages: [
+        { id: "user-1", conversationId: "c1", role: "user", content: "question", timestamp: 1 },
+        { id: "assistant-1", conversationId: "c1", role: "assistant", content: "old answer", timestamp: 2 },
+      ],
+      isStreaming: false,
+    })
+    vi.runAllTimers()
+    saveChatHistory.mockClear()
+    saveChatPreferences.mockClear()
+
+    expect(useChatStore.getState().startConversationTurnRegeneration(
+      "request-1",
+      "c1",
+      "user-1",
+      "assistant-1",
+    )).toBe(true)
+    vi.runAllTimers()
+
+    expect(saveChatHistory).not.toHaveBeenCalled()
+    expect(saveChatPreferences).not.toHaveBeenCalled()
+  })
+
   it("persists chat search preferences on flush", async () => {
     setProjectPath("/proj/A")
     useChatStore.setState({
@@ -172,5 +200,18 @@ describe("auto-save project-switch guard", () => {
       selectedSkills: ["reviewer"],
       disabledSkills: [],
     })
+  })
+
+  it("persists Agent smart mode after the browser applies its local fallback", async () => {
+    setProjectPath("/proj/A")
+    useChatStore.setState({ retrievalMode: "smart" })
+
+    expect(browserRetrievalMode(useChatStore.getState().retrievalMode)).toBe("standard")
+    await flushAndSuspendAutoSave()
+
+    expect(saveChatPreferences).toHaveBeenCalledWith(
+      "/proj/A",
+      expect.objectContaining({ retrievalMode: "smart" }),
+    )
   })
 })

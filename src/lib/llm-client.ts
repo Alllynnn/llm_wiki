@@ -159,6 +159,38 @@ export async function streamChat(
     return
   }
 
+  if (!providerConfig.streaming) {
+    try {
+      const payload: unknown = await response.json()
+      const content = providerConfig.parseResponse(payload)
+      if (!content) {
+        onError(new Error("Model returned an empty non-streaming response"))
+        return
+      }
+      onToken(content)
+      onDone()
+    } catch (err) {
+      if (timeoutFired) {
+        onError(new Error(`Request timed out after ${Math.round(timeoutMs / 60000)} min. Try a faster model or a smaller context.`))
+        return
+      }
+      if (
+        signal?.aborted ||
+        (err instanceof Error && err.name === "AbortError") ||
+        isRequestCancelledError(err)
+      ) {
+        onDone()
+        return
+      }
+      if (isFetchNetworkError(err)) {
+        onError(new Error("Connection lost while reading the complete response. Try again."))
+        return
+      }
+      onError(err instanceof Error ? err : new Error(String(err)))
+    }
+    return
+  }
+
   if (!response.body) {
     onError(new Error("Response body is null"))
     return

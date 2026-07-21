@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
+import { useChatStore } from "@/stores/chat-store"
 import {
+  browserRetrievalMode,
   filterSlashSkillOptions,
   findContextFileTrigger,
   findSlashSkillTrigger,
@@ -7,6 +9,21 @@ import {
   skillChipDeleteTarget,
   type ChatSkillOption,
 } from "./chat-input"
+
+describe("browser retrieval modes", () => {
+  it("keeps Agent-only smart retrieval out of the direct browser Q&A pipeline", () => {
+    expect(browserRetrievalMode("standard")).toBe("standard")
+    expect(browserRetrievalMode("smart")).toBe("standard")
+    expect(browserRetrievalMode("faithful")).toBe("faithful")
+  })
+
+  it("maps smart locally without changing the shared Agent preference", () => {
+    useChatStore.setState({ retrievalMode: "smart" })
+
+    expect(browserRetrievalMode(useChatStore.getState().retrievalMode)).toBe("standard")
+    expect(useChatStore.getState().retrievalMode).toBe("smart")
+  })
+})
 
 const skills: ChatSkillOption[] = [
   {

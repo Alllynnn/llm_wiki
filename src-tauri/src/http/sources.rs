@@ -17,11 +17,71 @@ use crate::http::session_event_sink::SessionEventSink;
 use crate::http::AppState;
 use crate::storage::paths::resolve_project_path;
 
+struct CancelSourceSearchOnDrop {
+    cancellation: Option<crate::core::search::SourceSearchCancellation>,
+}
+
+impl CancelSourceSearchOnDrop {
+    fn new(cancellation: crate::core::search::SourceSearchCancellation) -> Self {
+        Self {
+            cancellation: Some(cancellation),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.cancellation = None;
+    }
+}
+
+impl Drop for CancelSourceSearchOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.cancellation.take() {
+            cancellation.cancel();
+        }
+    }
+}
+
 pub fn sources_router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/sources/ingest", post(ingest))
         .route("/api/v1/sources/list", get(list))
+        .route("/api/v1/sources/search", post(search))
         .route("/api/v1/sources/ingest/queue", get(queue))
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceSearchRequest {
+    project_path: String,
+    query: String,
+    #[serde(default)]
+    top_k: Option<usize>,
+    #[serde(default)]
+    include_content: Option<bool>,
+}
+
+async fn search(
+    State(state): State<AppState>,
+    AuthUser(_user): AuthUser,
+    Json(req): Json<SourceSearchRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project_root =
+        resolve_project_path(&state.config.projects_root, &req.project_path).map_err(|e| {
+            ApiError::bad_request("PATH_ESCAPE", e.to_string())
+                .with_details(serde_json::json!({ "requested": req.project_path }))
+        })?;
+    let cancellation = crate::core::search::SourceSearchCancellation::default();
+    let mut cancel_on_drop = CancelSourceSearchOnDrop::new(cancellation.clone());
+    let result = crate::core::search::search_sources(
+        project_root.to_string_lossy().to_string(),
+        req.query,
+        req.top_k,
+        req.include_content,
+        cancellation,
+    )
+    .await?;
+    cancel_on_drop.disarm();
+    let value = serde_json::to_value(result).map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(Json(value))
 }
 
 // ── ingest ────────────────────────────────────────────────────────────────────
@@ -350,6 +410,76 @@ mod tests {
         let body = to_bytes(resp.into_body(), 4096).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(v["files"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sources_search_requires_login_and_returns_only_raw_source_matches() {
+        let dir = TempDir::new().unwrap();
+        let projects_root = dir.path().join("projects");
+        let source_dir = projects_root.join("myproj/raw/sources");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(projects_root.join("myproj/wiki")).unwrap();
+        std::fs::write(
+            source_dir.join("notes.org"),
+            "* Policy\nExact original wording",
+        )
+        .unwrap();
+        std::fs::write(
+            projects_root.join("myproj/wiki/generated.md"),
+            "# Generated\nExact original wording",
+        )
+        .unwrap();
+        let state = build_state_with_projects_root(
+            "alice",
+            "pw",
+            projects_root,
+            dir.path().to_path_buf(),
+        );
+        let app = main_router(state);
+        let request_body = r#"{"project_path":"myproj","query":"exact original wording","include_content":true}"#;
+
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/sources/search")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(request_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), 401);
+
+        let cookie = do_login(app.clone(), "alice", "pw").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/sources/search")
+                    .header("content-type", "application/json")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::from(request_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let results = value["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"], "raw/sources/notes.org");
+    }
+
+    #[test]
+    fn dropping_source_search_guard_cancels_the_blocking_scan() {
+        let cancellation = crate::core::search::SourceSearchCancellation::default();
+        {
+            let _guard = CancelSourceSearchOnDrop::new(cancellation.clone());
+        }
+        assert!(cancellation.is_cancelled());
     }
 
     // ── sources_ingest_returns_202_and_schedules_work ─────────────────────────

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from "react"
-import { FileSearch, Globe2, ImagePlus, Send, Square, X } from "lucide-react"
+import { BrainCircuit, ChevronDown, FileSearch, Globe2, ImagePlus, Send, Square, X } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { isImeComposing } from "@/lib/keyboard-utils"
 import type { MessageImage } from "@/stores/chat-store"
+import type { ChatRetrievalMode } from "@/lib/chat-agent-types"
 import {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_MB,
@@ -17,6 +18,18 @@ import {
 export interface ChatSendOptions {
   useWebSearch: boolean
   useAnyTxtSearch: boolean
+  retrievalMode: ChatRetrievalMode
+}
+
+// The browser Q&A surface has a direct standard pipeline plus raw-source-only
+// faithful retrieval. Smart retrieval remains available through the Agent
+// runtime, where its iterative evidence loop is actually implemented.
+const RETRIEVAL_MODE_OPTIONS: Exclude<ChatRetrievalMode, "smart">[] = ["standard", "faithful"]
+
+export function browserRetrievalMode(
+  mode: ChatRetrievalMode,
+): Exclude<ChatRetrievalMode, "smart"> {
+  return mode === "faithful" ? "faithful" : "standard"
 }
 
 export interface ChatSkillOption {
@@ -114,6 +127,8 @@ interface ChatInputProps {
   onSend: (text: string, images: MessageImage[], options: ChatSendOptions) => void
   onStop: () => void
   isStreaming: boolean
+  retrievalMode: ChatRetrievalMode
+  onRetrievalModeChange: (mode: ChatRetrievalMode) => void
   anyTxtAvailable?: boolean
   imageInputAvailable?: boolean
   placeholder?: string
@@ -123,6 +138,8 @@ export function ChatInput({
   onSend,
   onStop,
   isStreaming,
+  retrievalMode,
+  onRetrievalModeChange,
   anyTxtAvailable = true,
   imageInputAvailable = true,
   placeholder,
@@ -135,10 +152,19 @@ export function ChatInput({
   const [imageError, setImageError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const effectiveRetrievalMode = browserRetrievalMode(retrievalMode)
 
   useEffect(() => {
     if (!anyTxtAvailable) setUseAnyTxtSearch(false)
   }, [anyTxtAvailable])
+
+  useEffect(() => {
+    if (effectiveRetrievalMode !== "faithful") return
+    setUseWebSearch(false)
+    setUseAnyTxtSearch(false)
+    setImages([])
+    setImageError(null)
+  }, [effectiveRetrievalMode])
 
   // Validate + decode a batch of files (from paste, drop, or the file
   // picker) and append the accepted ones to `images`. Rejections set a
@@ -148,7 +174,7 @@ export function ChatInput({
     async (files: File[]) => {
       const imageFiles = files.filter((f) => f.type.startsWith("image/"))
       if (imageFiles.length === 0) return
-      if (!imageInputAvailable) {
+      if (!imageInputAvailable || effectiveRetrievalMode === "faithful") {
         setImageError(t("chat.imageInputUnavailable"))
         return
       }
@@ -182,7 +208,7 @@ export function ChatInput({
       }
       setImageError(error)
     },
-    [imageInputAvailable, images.length, t],
+    [effectiveRetrievalMode, imageInputAvailable, images.length, t],
   )
 
   const handlePaste = useCallback(
@@ -236,14 +262,14 @@ export function ChatInput({
       setImageError(t("chat.imageInputUnavailable"))
       return
     }
-    onSend(trimmed, images, { useWebSearch, useAnyTxtSearch })
+    onSend(trimmed, images, { useWebSearch, useAnyTxtSearch, retrievalMode: effectiveRetrievalMode })
     setValue("")
     setImages([])
     setImageError(null)
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto"
     }
-  }, [imageInputAvailable, images, isStreaming, onSend, t, useAnyTxtSearch, useWebSearch, value])
+  }, [effectiveRetrievalMode, imageInputAvailable, images, isStreaming, onSend, t, useAnyTxtSearch, useWebSearch, value])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -329,7 +355,7 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={isStreaming || !imageInputAvailable || images.length >= MAX_IMAGES_PER_MESSAGE}
+                disabled={isStreaming || !imageInputAvailable || effectiveRetrievalMode === "faithful" || images.length >= MAX_IMAGES_PER_MESSAGE}
                 className={searchToggleClass(false)}
               >
                 <ImagePlus className="h-3.5 w-3.5" />
@@ -340,7 +366,7 @@ export function ChatInput({
               type="button"
               aria-pressed={useWebSearch}
               onClick={() => setUseWebSearch((v) => !v)}
-              disabled={isStreaming}
+              disabled={isStreaming || effectiveRetrievalMode === "faithful"}
               className={searchToggleClass(useWebSearch)}
             >
               <Globe2 className="h-3.5 w-3.5" />
@@ -362,7 +388,7 @@ export function ChatInput({
                     type="button"
                     aria-pressed={useAnyTxtSearch}
                     onClick={() => setUseAnyTxtSearch((v) => !v)}
-                    disabled={isStreaming || !anyTxtAvailable}
+                    disabled={isStreaming || !anyTxtAvailable || effectiveRetrievalMode === "faithful"}
                     className={searchToggleClass(useAnyTxtSearch)}
                   >
                     <FileSearch className="h-3.5 w-3.5" />
@@ -381,6 +407,26 @@ export function ChatInput({
                 )}
               </Tooltip>
             </TooltipProvider>
+            <label
+              className="relative inline-flex h-7 items-center rounded-md border border-border/70 bg-muted/30 text-xs font-medium text-foreground transition-colors hover:bg-accent/60 focus-within:border-ring/60 focus-within:ring-1 focus-within:ring-ring/30"
+              title={t("chat.retrievalModeHint")}
+            >
+              <BrainCircuit className="ml-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <select
+                value={effectiveRetrievalMode}
+                onChange={(event) => onRetrievalModeChange(event.target.value as ChatRetrievalMode)}
+                disabled={isStreaming}
+                aria-label={t("chat.retrievalMode")}
+                className="h-full max-w-36 appearance-none bg-transparent py-0 pl-1.5 pr-7 text-xs font-medium outline-none disabled:pointer-events-none disabled:opacity-50"
+              >
+                {RETRIEVAL_MODE_OPTIONS.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {t(`chat.retrievalModes.${mode}`)}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-1.5 h-3.5 w-3.5 text-muted-foreground" />
+            </label>
           </div>
           {isStreaming ? (
             <Button
