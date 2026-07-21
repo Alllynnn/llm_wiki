@@ -149,9 +149,21 @@ function findElement(node: unknown, type: unknown): ElementLike | null {
   return findElement(element.props?.children, type)
 }
 
-function renderPanel(): ChatInputTestProps {
+function findElements(node: unknown, type: unknown): ElementLike[] {
+  if (Array.isArray(node)) return node.flatMap((child) => findElements(child, type))
+  if (!node || typeof node !== "object") return []
+  const element = node as ElementLike
+  const matches = element.type === type ? [element] : []
+  return [...matches, ...findElements(element.props?.children, type)]
+}
+
+function renderPanelTree(): ReturnType<typeof ChatPanel> {
   hookHarness.beginRender()
-  const tree = ChatPanel()
+  return ChatPanel()
+}
+
+function renderPanel(): ChatInputTestProps {
+  const tree = renderPanelTree()
   const input = findElement(tree, "mock-chat-input")
   if (!input) throw new Error("ChatInput not found")
   return input.props as unknown as ChatInputTestProps
@@ -351,5 +363,60 @@ describe("ChatPanel request lifecycle", () => {
     expect(useChatStore.getState().isStreaming).toBe(false)
     expect(useChatStore.getState().messages.filter((message) => message.role === "assistant"))
       .toEqual([expect.objectContaining({ content: "Error: search index offline" })])
+  })
+
+  it("regenerates the captured turn without modifying a conversation selected afterward", async () => {
+    useChatStore.setState({
+      conversations: [
+        { id: "first", title: "First", createdAt: 1, updatedAt: 1 },
+        { id: "second", title: "Second", createdAt: 2, updatedAt: 2 },
+      ],
+      activeConversationId: "first",
+      messages: [
+        {
+          id: "user-a",
+          conversationId: "first",
+          role: "user",
+          content: "question A",
+          timestamp: 1,
+          retrievalMode: "faithful",
+          useWebSearch: false,
+          useAnyTxtSearch: false,
+        },
+        { id: "assistant-a", conversationId: "first", role: "assistant", content: "old A", timestamp: 2 },
+        { id: "user-b", conversationId: "second", role: "user", content: "question B", timestamp: 3 },
+        { id: "assistant-b", conversationId: "second", role: "assistant", content: "answer B", timestamp: 4 },
+      ],
+    })
+    searchFaithfulSourcesMock.mockResolvedValue([])
+    streamChatMock.mockImplementationOnce(async (
+      _config: unknown,
+      _messages: unknown,
+      callbacks: StreamCallbacks,
+    ) => {
+      callbacks.onToken("new A")
+      callbacks.onDone()
+    })
+    const tree = renderPanelTree()
+    const assistant = findElements(tree, "mock-chat-message")
+      .find((element) => (element.props?.message as { id?: string } | undefined)?.id === "assistant-a")
+    const regenerate = assistant?.props?.onRegenerate as (() => Promise<void>) | undefined
+    if (!regenerate) throw new Error("regenerate callback not found")
+
+    const regeneration = regenerate()
+    useChatStore.getState().setActiveConversation("second")
+    await regeneration
+    await vi.waitFor(() => expect(streamChatMock).toHaveBeenCalledOnce())
+
+    expect(useChatStore.getState().messages.filter((message) => message.conversationId === "second"))
+      .toEqual([
+        expect.objectContaining({ id: "user-b", content: "question B" }),
+        expect.objectContaining({ id: "assistant-b", content: "answer B" }),
+      ])
+    expect(useChatStore.getState().messages.filter((message) => message.conversationId === "first"))
+      .toEqual([
+        expect.objectContaining({ id: "user-a", content: "question A" }),
+        expect.objectContaining({ role: "assistant", content: "new A" }),
+      ])
   })
 })

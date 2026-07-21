@@ -151,6 +151,64 @@ describe("chat-store conversation isolation", () => {
     ])
   })
 
+  it("starts regeneration only for the explicitly captured conversation turn", () => {
+    useChatStore.setState({
+      conversations: [
+        { id: "c1", title: "One", createdAt: 1, updatedAt: 1 },
+        { id: "c2", title: "Two", createdAt: 2, updatedAt: 2 },
+      ],
+      activeConversationId: "c2",
+      messages: [
+        { id: "user-1", conversationId: "c1", role: "user", content: "question", timestamp: 1 },
+        { id: "same", conversationId: "c1", role: "assistant", content: "replace", timestamp: 2 },
+        { id: "user-2", conversationId: "c2", role: "user", content: "keep question", timestamp: 3 },
+        { id: "same", conversationId: "c2", role: "assistant", content: "keep answer", timestamp: 4 },
+      ],
+    })
+
+    expect(useChatStore.getState().startConversationTurnRegeneration(
+      "request-1",
+      "c1",
+      "user-1",
+      "same",
+    ))
+      .toBe(true)
+
+    expect(useChatStore.getState().messages).toEqual([
+      { id: "user-1", conversationId: "c1", role: "user", content: "question", timestamp: 1 },
+      { id: "user-2", conversationId: "c2", role: "user", content: "keep question", timestamp: 3 },
+      { id: "same", conversationId: "c2", role: "assistant", content: "keep answer", timestamp: 4 },
+    ])
+    expect(useChatStore.getState()).toEqual(expect.objectContaining({
+      isStreaming: true,
+      streamingRequestId: "request-1",
+      streamingConversationId: "c1",
+    }))
+  })
+
+  it("refuses to regenerate a turn when the conversation has a newer user message", () => {
+    const messages = [
+      { id: "user-1", conversationId: "c1", role: "user" as const, content: "old question", timestamp: 1 },
+      { id: "assistant-1", conversationId: "c1", role: "assistant" as const, content: "old answer", timestamp: 2 },
+      { id: "user-2", conversationId: "c1", role: "user" as const, content: "new question", timestamp: 3 },
+    ]
+    useChatStore.setState({
+      conversations: [{ id: "c1", title: "One", createdAt: 1, updatedAt: 1 }],
+      activeConversationId: "c1",
+      messages,
+    })
+
+    expect(useChatStore.getState().startConversationTurnRegeneration(
+      "request-1",
+      "c1",
+      "user-1",
+      "assistant-1",
+    )).toBe(false)
+
+    expect(useChatStore.getState().messages).toEqual(messages)
+    expect(useChatStore.getState().isStreaming).toBe(false)
+  })
+
   it("clears stale stream content when creating or switching conversations", () => {
     const first = useChatStore.getState().createConversation()
     useChatStore.setState({

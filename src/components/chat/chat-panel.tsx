@@ -54,6 +54,13 @@ interface ActiveChatRequest {
   controller: AbortController
 }
 
+interface ChatSendTarget {
+  conversationId: string
+  projectPath: string
+  existingUserMessageId: string
+  assistantMessageId: string
+}
+
 function formatExternalSearchContext(results: WebSearchResult[]): string {
   if (results.length === 0) return ""
   return results
@@ -182,7 +189,7 @@ export function ChatPanel() {
   const endStreamForRequest = useChatStore((s) => s.endStreamForRequest)
   const finalizeStreamForRequest = useChatStore((s) => s.finalizeStreamForRequest)
   const createConversation = useChatStore((s) => s.createConversation)
-  const removeLastAssistantMessage = useChatStore((s) => s.removeLastAssistantMessage)
+  const startConversationTurnRegeneration = useChatStore((s) => s.startConversationTurnRegeneration)
   const maxHistoryMessages = useChatStore((s) => s.maxHistoryMessages)
   const retrievalMode = useChatStore((s) => s.retrievalMode)
   const setRetrievalMode = useChatStore((s) => s.setRetrievalMode)
@@ -234,25 +241,43 @@ export function ChatPanel() {
         useAnyTxtSearch: false,
         retrievalMode: "standard",
       },
+      target?: ChatSendTarget,
     ) => {
-      // Auto-create a conversation if none is active
-      let convId = useChatStore.getState().activeConversationId
+      const requestProject = useWikiStore.getState().project
+      const currentRequestProjectPath = requestProject ? normalizePath(requestProject.path) : ""
+      if (target && currentRequestProjectPath !== target.projectPath) return
+
+      // Auto-create a conversation if none is active. Regeneration always
+      // supplies the conversation and reuses its existing user message.
+      let convId = target?.conversationId ?? useChatStore.getState().activeConversationId
       if (!convId) {
         convId = createConversation()
       }
 
       const effectiveImages = options.retrievalMode === "faithful" ? [] : images
-      addMessageToConversation(convId, "user", text, effectiveImages, undefined, options)
+      if (!target) {
+        addMessageToConversation(convId, "user", text, effectiveImages, undefined, options)
+      }
       const requestId = nextChatRequestId()
-      const originProjectPath = project ? normalizePath(project.path) : ""
+      const originProjectPath = currentRequestProjectPath
       const controller = new AbortController()
+      if (target) {
+        const started = startConversationTurnRegeneration(
+          requestId,
+          convId,
+          target.existingUserMessageId,
+          target.assistantMessageId,
+        )
+        if (!started) return
+      } else {
+        startStreamForConversation(requestId, convId)
+      }
       activeRequestRef.current = {
         id: requestId,
         conversationId: convId,
         projectPath: originProjectPath,
         controller,
       }
-      startStreamForConversation(requestId, convId)
 
       const ownsRequest = () => activeRequestRef.current?.id === requestId
       const projectStillMatches = () => {
@@ -277,12 +302,12 @@ export function ChatPanel() {
       // wiki pages the user clearly didn't ask about. Short-circuit with a
       // minimal system prompt and let the model reply conversationally.
       const greetingOnly = isGreeting(text)
-      if (project && greetingOnly && options.retrievalMode !== "faithful") {
+      if (requestProject && greetingOnly && options.retrievalMode !== "faithful") {
         const outLang = getOutputLanguage(text)
         systemMessages.push({
           role: "system",
           content: [
-            `You are a wiki assistant for the project "${project.name}".`,
+            `You are a wiki assistant for the project "${requestProject.name}".`,
             "The user sent a casual greeting — reply briefly and naturally, in one or two sentences.",
             "Do NOT invent wiki content or pretend to have retrieved pages. Invite the user to ask a concrete question if they want information from the wiki.",
             "",
@@ -290,8 +315,8 @@ export function ChatPanel() {
           ].join("\n"),
         })
         // Skip retrieval; queryRefs stays empty so no "Sources" chip is shown.
-      } else if (project) {
-        const pp = normalizePath(project.path)
+      } else if (requestProject) {
+        const pp = normalizePath(requestProject.path)
 
         // ── Budget allocation (see context-budget.ts) ─────────
         // Page budget scales with the LLM's context window; we now
@@ -351,7 +376,7 @@ export function ChatPanel() {
           systemMessages.push({
             role: "system",
             content: [
-              `You are a source-faithful assistant for the project "${project.name}".`,
+              `You are a source-faithful assistant for the project "${requestProject.name}".`,
               "Answer only from the original source excerpts below.",
               "Do not use generated wiki pages, graph context, web results, AnyTXT results, conversation background knowledge, or unsupported inference as evidence.",
               "Cite the source number beside every factual claim and preserve quoted wording exactly.",
@@ -704,7 +729,7 @@ export function ChatPanel() {
         releaseRequest()
       }
     },
-    [llmConfig, searchApiConfig, addMessageToConversation, startStreamForConversation, appendStreamTokenForRequest, endStreamForRequest, finalizeStreamForRequest, createConversation, maxHistoryMessages, project],
+    [llmConfig, searchApiConfig, addMessageToConversation, startStreamForConversation, startConversationTurnRegeneration, appendStreamTokenForRequest, endStreamForRequest, finalizeStreamForRequest, createConversation, maxHistoryMessages],
   )
 
   const handleStop = useCallback(() => {
@@ -713,39 +738,44 @@ export function ChatPanel() {
 
   const handleRegenerate = useCallback(async () => {
     if (isStreaming) return
-    // Find the last user message in active conversation
-    const active = useChatStore.getState().getActiveMessages()
-    const lastUserMsg = [...active].reverse().find((m) => m.role === "user")
-    if (!lastUserMsg) return
-    // Remove the last assistant reply, then re-send
-    removeLastAssistantMessage()
-    // Small delay to let state update
-    await new Promise((r) => setTimeout(r, 50))
-    // Trigger send with the same text (handleSend will add a new user message,
-    // so also remove the original to avoid duplication)
-    // Actually: just call handleSend — but it adds a user message. To avoid dupe,
-    // we remove the last user message too and let handleSend re-add it.
     const store = useChatStore.getState()
-    const updatedActive = store.getActiveMessages()
-    const lastUser = [...updatedActive].reverse().find((m) => m.role === "user")
-    if (lastUser) {
-      useChatStore.setState((s) => ({
-        messages: s.messages.filter((m) => m.id !== lastUser.id),
-      }))
-    }
+    const conversationId = store.activeConversationId
+    const currentProject = useWikiStore.getState().project
+    if (!conversationId || !currentProject) return
+    const projectPath = normalizePath(currentProject.path)
+    const conversationMessages = store.messages.filter(
+      (message) => message.conversationId === conversationId,
+    )
+    const reversedAssistantIndex = [...conversationMessages]
+      .reverse()
+      .findIndex((message) => message.role === "assistant")
+    if (reversedAssistantIndex < 0) return
+    const assistantIndex = conversationMessages.length - 1 - reversedAssistantIndex
+    const assistantMessage = conversationMessages[assistantIndex]
+    const userMessage = [...conversationMessages.slice(0, assistantIndex)]
+      .reverse()
+      .find((message) => message.role === "user")
+    if (!assistantMessage || !userMessage) return
+
     const originalOptions: ChatSendOptions = {
-      retrievalMode: lastUserMsg.retrievalMode ?? "standard",
-      useWebSearch: lastUserMsg.useWebSearch ?? false,
-      useAnyTxtSearch: lastUserMsg.useAnyTxtSearch ?? false,
+      retrievalMode: userMessage.retrievalMode ?? "standard",
+      useWebSearch: userMessage.useWebSearch ?? false,
+      useAnyTxtSearch: userMessage.useAnyTxtSearch ?? false,
     }
     // Re-send with the original retrieval policy. Faithful turns remain
     // text-only; other modes retain their original vision context.
-    handleSend(
-      lastUserMsg.content,
-      originalOptions.retrievalMode === "faithful" ? [] : (lastUserMsg.images ?? []),
+    await handleSend(
+      userMessage.content,
+      originalOptions.retrievalMode === "faithful" ? [] : (userMessage.images ?? []),
       originalOptions,
+      {
+        conversationId,
+        projectPath,
+        existingUserMessageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+      },
     )
-  }, [isStreaming, removeLastAssistantMessage, handleSend])
+  }, [isStreaming, handleSend])
 
   const handleWriteToWiki = useCallback(async () => {
     if (!project) return

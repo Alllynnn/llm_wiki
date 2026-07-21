@@ -107,6 +107,12 @@ interface ChatState {
   setSelectedContextFiles: (paths: string[]) => void
   setDisabledSkills: (skills: string[]) => void
   removeLastAssistantMessage: () => void  // for regenerate: remove last assistant reply
+  startConversationTurnRegeneration: (
+    requestId: string,
+    conversationId: string,
+    userMessageId: string,
+    assistantMessageId: string,
+  ) => boolean
 
   // Helpers
   getActiveMessages: () => DisplayMessage[]
@@ -455,6 +461,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: state.messages.filter((m) => m.conversationId !== activeId || m.id !== msgToRemove.id),
       }
     }),
+
+  startConversationTurnRegeneration: (requestId, conversationId, userMessageId, assistantMessageId) => {
+    let started = false
+    set((state) => {
+      if (!state.conversations.some((conversation) => conversation.id === conversationId)) {
+        return state
+      }
+      const conversationMessages = state.messages.filter(
+        (message) => message.conversationId === conversationId,
+      )
+      const userIndex = conversationMessages.findIndex(
+        (message) => message.id === userMessageId && message.role === "user",
+      )
+      const assistantIndex = conversationMessages.findIndex(
+        (message) => message.id === assistantMessageId && message.role === "assistant",
+      )
+      if (userIndex < 0 || assistantIndex <= userIndex) return state
+      const hasAnotherUserInTurn = conversationMessages
+        .slice(userIndex + 1, assistantIndex)
+        .some((message) => message.role === "user")
+      const hasNewerConversationTurn = conversationMessages
+        .slice(assistantIndex + 1)
+        .some((message) => message.role === "user" || message.role === "assistant")
+      if (hasAnotherUserInTurn || hasNewerConversationTurn) return state
+
+      started = true
+      return {
+        isStreaming: true,
+        streamingContent: "",
+        streamingRequestId: requestId,
+        streamingConversationId: conversationId,
+        messages: state.messages.filter(
+          (message) =>
+            message.conversationId !== conversationId ||
+            message.id !== assistantMessageId,
+        ),
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === conversationId
+            ? { ...conversation, updatedAt: Date.now() }
+            : conversation
+        ),
+      }
+    })
+    return started
+  },
 
   getActiveMessages: () => {
     const { messages, activeConversationId } = get()
