@@ -140,8 +140,15 @@ export async function webSearch(
   if (resolved.provider === "none") {
     throw new Error("Web search not configured. Select a search provider in Settings.")
   }
-  if ((resolved.provider === "tavily" || resolved.provider === "serpapi") && !resolved.apiKey) {
-    throw new Error("Web search not configured. Add a Tavily or SerpApi API key in Settings, or select a different provider.")
+  if (
+    (
+      resolved.provider === "tavily" ||
+      resolved.provider === "serpapi" ||
+      resolved.provider === "bocha"
+    ) &&
+    !resolved.apiKey
+  ) {
+    throw new Error("Web search not configured. Add an API key for the selected search provider in Settings, or select a key-free provider such as Firecrawl or SearXNG.")
   }
   if (resolved.provider === "searxng" && !resolved.searXngUrl?.trim()) {
     throw new Error("Web search not configured. Add a SearXNG instance URL in Settings.")
@@ -159,6 +166,8 @@ export async function webSearch(
       return searXngSearch(query, resolved.searXngUrl ?? "", maxResults, resolved.searXngCategories ?? ["general"])
     case "ollama":
       return ollamaSearch(query, resolved.apiKey ?? "", maxResults)
+    case "bocha":
+      return bochaSearch(query, resolved.apiKey, maxResults)
     default:
       throw new Error(`Unknown search provider: ${resolved.provider}`)
   }
@@ -448,4 +457,69 @@ async function ollamaSearch(
         source: hostnameFromUrl(url),
       }
     })
+}
+
+interface BochaSearchResponse {
+  code?: number
+  msg?: string
+  data?: {
+    webPages?: {
+      value?: Array<{
+        name?: string
+        url?: string
+        summary?: string | null
+        snippet?: string
+      }>
+    }
+  }
+}
+
+async function bochaSearch(
+  query: string,
+  apiKey: string,
+  maxResults: number,
+): Promise<WebSearchResult[]> {
+  let response: Response
+  try {
+    response = await proxyFetch("https://api.bocha.cn/v1/web-search", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        query,
+        freshness: "noLimit",
+        summary: true,
+        count: Math.min(Math.max(1, maxResults), 50),
+      }),
+    })
+  } catch (err) {
+    if (isFetchNetworkError(err)) {
+      throw new Error(
+        "Network error reaching Bocha Search. Check your connectivity and whether the Bocha API key is still valid.",
+      )
+    }
+    throw err
+  }
+
+  const data = (await response.json().catch(() => ({}))) as BochaSearchResponse
+  if (!response.ok || data.code !== 200) {
+    const message = data.msg?.trim() || "unknown API error"
+    throw new Error(`Bocha Search failed (code ${data.code ?? response.status}): ${message}`)
+  }
+
+  return (data.data?.webPages?.value ?? [])
+    .slice(0, Math.min(Math.max(1, maxResults), 50))
+    .map((item) => {
+      const url = item.url ?? ""
+      return {
+        title: item.name ?? "Untitled",
+        url,
+        snippet: item.summary ?? item.snippet ?? "",
+        source: hostnameFromUrl(url),
+      }
+    })
+    .filter((item) => item.url.length > 0)
 }

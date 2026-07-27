@@ -162,7 +162,9 @@ describe("webSearch", () => {
     await expect(webSearch("x", { provider: "none", apiKey: "" }, 5))
       .rejects.toThrow("Select a search provider")
     await expect(webSearch("x", { provider: "serpapi", apiKey: "" }, 5))
-      .rejects.toThrow("Tavily or SerpApi API key")
+      .rejects.toThrow("Add an API key for the selected search provider")
+    await expect(webSearch("x", { provider: "bocha", apiKey: "" }, 5))
+      .rejects.toThrow("Add an API key for the selected search provider")
     await expect(webSearch("x", { provider: "searxng", apiKey: "" }, 5))
       .rejects.toThrow("SearXNG instance URL")
   })
@@ -203,6 +205,63 @@ describe("webSearch", () => {
         ollama: { ollamaUrl: "https://ollama.com" },
       },
     })).toBe(false)
+  })
+
+  it("resolves a stored Bocha key and uses the browser-service proxy", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      code: 200,
+      data: {
+        webPages: {
+          value: [{
+            name: "Bocha result",
+            url: "https://example.com/bocha",
+            summary: "Detailed summary",
+            snippet: "Short snippet",
+          }],
+        },
+      },
+    }))
+
+    const out = await webSearch("阿里巴巴 ESG 报告", {
+      provider: "bocha",
+      apiKey: "",
+      providerConfigs: {
+        bocha: { apiKey: "bocha-key" },
+      },
+    }, 12)
+
+    expect(fetchMock).toHaveBeenCalledWith("https://api.bocha.cn/v1/web-search", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: "Bearer bocha-key",
+      },
+      body: JSON.stringify({
+        query: "阿里巴巴 ESG 报告",
+        freshness: "noLimit",
+        summary: true,
+        count: 12,
+      }),
+    })
+    expect(out).toEqual([{
+      title: "Bocha result",
+      url: "https://example.com/bocha",
+      snippet: "Detailed summary",
+      source: "example.com",
+    }])
+  })
+
+  it("surfaces Bocha API payload errors", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      code: 401,
+      msg: "invalid api key",
+    }))
+
+    await expect(webSearch("x", {
+      provider: "bocha",
+      apiKey: "bad-key",
+    }, 5)).rejects.toThrow("Bocha Search failed (code 401): invalid api key")
   })
 
   it("does not leak a stale top-level Ollama URL into non-Ollama providers", () => {
