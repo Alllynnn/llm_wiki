@@ -391,6 +391,8 @@ describe("project file sync", () => {
     await startProjectFileSync(project, {
       enabled: true,
       autoIngest: true,
+      persistExtractedMarkdown: false,
+      parsingConcurrency: 2,
       includeExtensions: ["md", "xml"],
       excludeExtensions: [],
       excludeDirs: [],

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
-import { collectResearchSources, makeDeepResearchFileName } from "./deep-research"
+import { collectResearchSources, makeDeepResearchFileName, noResearchSourcesTaskPatch, resolveReviewForSavedResearch } from "./deep-research"
 import type { SearchApiConfig } from "@/stores/wiki-store"
 import type { WebSearchResult } from "./web-search"
+import { useWikiStore } from "@/stores/wiki-store"
+import { useResearchStore } from "@/stores/research-store"
+import { useReviewStore, type ReviewItem } from "@/stores/review-store"
 
 const webResult: WebSearchResult = {
   title: "Web",
@@ -45,6 +48,114 @@ describe("makeDeepResearchFileName", () => {
     const localMorning = new Date(2026, 5, 6, 1, 30, 0)
 
     expect(makeDeepResearchFileName("政策版本差异", localMorning).date).toBe("2026-06-06")
+  })
+})
+
+describe("noResearchSourcesTaskPatch", () => {
+  it("marks source failures as an error instead of completed", () => {
+    expect(noResearchSourcesTaskPatch(["Firecrawl blocked this IP", "AnyTXT offline"])).toEqual({
+      status: "error",
+      synthesis: "",
+      error: "Firecrawl blocked this IP\nAnyTXT offline",
+    })
+  })
+
+  it("marks an empty successful search as done", () => {
+    expect(noResearchSourcesTaskPatch([])).toEqual({
+      status: "done",
+      synthesis: "No research sources found.",
+      error: null,
+    })
+  })
+})
+
+describe("review-linked research", () => {
+  const review: ReviewItem = {
+    id: "review-1",
+    type: "suggestion",
+    title: "Research this",
+    description: "Needs evidence",
+    options: [],
+    resolved: false,
+    createdAt: 1,
+  }
+
+  it("resolves the source review only after a saved result exists", () => {
+    useWikiStore.setState({ project: { id: "p1", name: "Project", path: "/project" } })
+    useReviewStore.setState({ items: [review] })
+    useResearchStore.setState({
+      tasks: [{
+        id: "research-1",
+        topic: "topic",
+        sourceReviewId: review.id,
+        status: "done",
+        webResults: [],
+        synthesis: "answer",
+        savedPath: "wiki/queries/research-topic.md",
+        error: null,
+        createdAt: 1,
+      }],
+    })
+
+    expect(resolveReviewForSavedResearch(
+      "/project",
+      "research-1",
+      "wiki/queries/research-topic.md",
+    )).toBe(true)
+    expect(useReviewStore.getState().items[0]).toMatchObject({
+      resolved: true,
+      resolvedAction: "Research saved: wiki/queries/research-topic.md",
+    })
+  })
+
+  it("does not resolve another project's review", () => {
+    useWikiStore.setState({ project: { id: "p2", name: "Other", path: "/other" } })
+    useReviewStore.setState({ items: [review] })
+    useResearchStore.setState({
+      tasks: [{
+        id: "research-1",
+        topic: "topic",
+        sourceReviewId: review.id,
+        status: "done",
+        webResults: [],
+        synthesis: "answer",
+        savedPath: "wiki/queries/research-topic.md",
+        error: null,
+        createdAt: 1,
+      }],
+    })
+
+    expect(resolveReviewForSavedResearch(
+      "/project",
+      "research-1",
+      "wiki/queries/research-topic.md",
+    )).toBe(false)
+    expect(useReviewStore.getState().items[0].resolved).toBe(false)
+  })
+
+  it("rejects callbacks before the linked task reaches the matching saved state", () => {
+    useWikiStore.setState({ project: { id: "p1", name: "Project", path: "/project" } })
+    useReviewStore.setState({ items: [review] })
+    useResearchStore.setState({
+      tasks: [{
+        id: "research-1",
+        topic: "topic",
+        sourceReviewId: review.id,
+        status: "saving",
+        webResults: [],
+        synthesis: "answer",
+        savedPath: null,
+        error: null,
+        createdAt: 1,
+      }],
+    })
+
+    expect(resolveReviewForSavedResearch(
+      "/project",
+      "research-1",
+      "wiki/queries/research-topic.md",
+    )).toBe(false)
+    expect(useReviewStore.getState().items[0].resolved).toBe(false)
   })
 })
 
