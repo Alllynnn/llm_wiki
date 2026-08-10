@@ -466,7 +466,7 @@ LLM Wiki ships a built-in local HTTP API at `http://127.0.0.1:19828` (token-prot
 - `GET /api/v1/projects/{id}/files` / `files/content` — read files and content
 - `GET /api/v1/projects/{id}/reviews?status=unresolved` — export Review tab items for wiki maintenance (`status`: `unresolved`, `resolved`, or `all`; optional `type` and `limit`)
 - `POST /api/v1/projects/{id}/search` — **hybrid** retrieval (keyword + vector) returning `mode`, `tokenHits`, `vectorHits`, per-result `vectorScore`
-- `POST /api/v1/projects/{id}/chat` — non-streaming backend Agent chat endpoint returning an assistant message, references, usage, and tool events for wiki/source/web/AnyTXT retrieval; `mode: "deep"` broadens evidence collection, while the full Deep Research workspace remains available in the desktop UI
+- `POST /api/v1/projects/{id}/chat` — backend Agent chat endpoint for wiki/source/web/AnyTXT retrieval. JSON requests remain non-streaming by default; send `"stream": true` or `Accept: text/event-stream` for SSE events (`meta`, incremental `agent`, then `done`, `cancelled`, or `error`). The terminal `done` frame contains the complete aggregate response, so clients should not render both message deltas and the final message as separate answers. `mode: "deep"` broadens evidence collection, while the full Deep Research workspace remains available in the desktop UI
 - `GET /api/v1/projects/{id}/graph` — wikilinks graph
 - `POST /api/v1/projects/{id}/sources/rescan` — trigger a backend rescan
 

@@ -62,6 +62,7 @@ export interface SettingsDraft {
   proxyEnabled: boolean
   proxyUrl: string
   proxyBypassLocal: boolean
+  proxyAcceptInvalidCerts: boolean
 
   // Scheduled Import
   scheduledImportEnabled: boolean
@@ -84,6 +85,7 @@ export interface SettingsDraft {
   mineruEnabled: boolean
   mineruBackend: "cloud" | "local"
   mineruLocalEndpoint: string
+  mineruLocalToken: string
   mineruLocalBackend: MineruLocalBackend
   mineruLocalEffort: MineruEffort
   mineruLocalParseMethod: MineruParseMethod
