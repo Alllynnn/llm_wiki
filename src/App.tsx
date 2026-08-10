@@ -29,6 +29,7 @@ import {
 } from "@/lib/project-store"
 import { loadReviewItems, loadLintItems, loadChatHistory } from "@/lib/persist"
 import { setupAutoSave } from "@/lib/auto-save"
+import { DEFAULT_SOURCE_WATCH_CONFIG } from "@/lib/source-watch-config"
 import { useGlobalShortcut } from "@/hooks/use-global-shortcut"
 import { AppLayout } from "@/components/layout/app-layout"
 import { WelcomeScreen } from "@/components/project/welcome-screen"
@@ -59,6 +60,11 @@ function App() {
   // auth: null = checking, false = unauthenticated, AuthUser = authenticated
   const [authUser, setAuthUser_] = useState<AuthUser | null | false>(null)
   const initialBrowserWikiPathRef = useRef(window.location.pathname)
+
+  function isCurrentProject(proj: WikiProject): boolean {
+    const current = useWikiStore.getState().project
+    return current?.id === proj.id && current.path === proj.path
+  }
 
   // Set up auto-save once on mount. The Tauri-era clip watcher (polling the
   // local Web Clipper daemon on :19827) is not part of the browser/LAN build.
@@ -326,6 +332,21 @@ function App() {
       // Bump data version so any cached graphs/views invalidate
       useWikiStore.getState().bumpDataVersion()
       await saveLastProject(proj)
+
+      // Apply the project-specific worker limit before restoring its queue so
+      // newly enqueued tasks never start with another project's concurrency.
+      const { setIngestWorkerLimit } = await import("@/lib/ingest-queue")
+      try {
+        const config = await loadSourceWatchConfig(proj.id)
+        if (!isCurrentProject(proj)) return
+        useWikiStore.getState().setSourceWatchConfig(config)
+        setIngestWorkerLimit(config.ingestConcurrency)
+      } catch (err) {
+        console.error("Failed to load ingest concurrency:", err)
+        if (!isCurrentProject(proj)) return
+        useWikiStore.getState().setSourceWatchConfig(DEFAULT_SOURCE_WATCH_CONFIG)
+        setIngestWorkerLimit(DEFAULT_SOURCE_WATCH_CONFIG.ingestConcurrency)
+      }
 
       // Restore ingest queue (resume interrupted tasks). Keyed by the
       // project's stable UUID so the queue still finds the right project

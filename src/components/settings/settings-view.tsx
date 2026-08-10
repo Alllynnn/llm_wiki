@@ -26,6 +26,7 @@ import { loadSourceWatchConfig, saveLanguage, saveTheme, loadTheme } from "@/lib
 import { applyTheme, type AppTheme } from "@/lib/theme"
 import type { SettingsDraft, DraftSetter } from "./settings-types"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
+import { setIngestWorkerLimit } from "@/lib/ingest-queue"
 import { LlmProviderSection } from "./sections/llm-provider-section"
 import { EmbeddingSection } from "./sections/embedding-section"
 import { MultimodalSection } from "./sections/multimodal-section"
@@ -238,11 +239,13 @@ export function SettingsView() {
       if (cancelled) return
       const normalized = normalizeSourceWatchConfig(config)
       setSourceWatchConfig(normalized)
+      setIngestWorkerLimit(normalized.ingestConcurrency)
       setDraftState((prev) => ({ ...prev, sourceWatchConfig: normalized }))
     }).catch(() => {
       if (cancelled) return
       const fallback = normalizeSourceWatchConfig()
       setSourceWatchConfig(fallback)
+      setIngestWorkerLimit(fallback.ingestConcurrency)
       setDraftState((prev) => ({ ...prev, sourceWatchConfig: fallback }))
     })
     return () => {
@@ -415,6 +418,7 @@ export function SettingsView() {
     setOutputLanguage(draft.outputLanguage as typeof outputLanguage)
     setProxyConfig(newProxy)
     setSourceWatchConfig(newSourceWatch)
+    setIngestWorkerLimit(newSourceWatch.ingestConcurrency)
     setMaxHistoryMessages(draft.maxHistoryMessages)
     setMineruConfig(newMineruConfig)
     setApiConfig(newApiConfig)

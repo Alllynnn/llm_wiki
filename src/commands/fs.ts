@@ -256,6 +256,22 @@ export interface FileHistoryStats {
   entries: number
 }
 
+export interface FileHistorySettings {
+  enabled: boolean
+  maxVersionsPerFile: number
+}
+
+export async function getFileHistorySettings(_projectPath: string): Promise<FileHistorySettings> {
+  return unsupportedBrowserCommand("getFileHistorySettings")
+}
+
+export async function setFileHistorySettings(
+  _projectPath: string,
+  _settings: FileHistorySettings,
+): Promise<FileHistorySettings> {
+  return unsupportedBrowserCommand("setFileHistorySettings")
+}
+
 export async function getFileHistoryStats(_projectPath: string): Promise<FileHistoryStats> {
   return unsupportedBrowserCommand("getFileHistoryStats")
 }
