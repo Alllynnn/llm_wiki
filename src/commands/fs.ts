@@ -250,6 +250,20 @@ function unsupportedBrowserCommand(command: string): never {
   throw new Error(`${command} is not available through the browser HTTP API`)
 }
 
+export interface FileHistoryStats {
+  bytes: number
+  files: number
+  entries: number
+}
+
+export async function getFileHistoryStats(_projectPath: string): Promise<FileHistoryStats> {
+  return unsupportedBrowserCommand("getFileHistoryStats")
+}
+
+export async function clearFileHistory(_projectPath: string): Promise<void> {
+  return unsupportedBrowserCommand("clearFileHistory")
+}
+
 export async function listFileHistory(
   _projectPath: string,
   _filePath: string,
