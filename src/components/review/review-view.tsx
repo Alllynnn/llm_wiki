@@ -19,6 +19,7 @@ import { normalizePath } from "@/lib/path-utils"
 import { hasConfiguredDeepResearchSources } from "@/lib/web-search"
 import { makeQueryFileName } from "@/lib/wiki-filename"
 import { useTranslation } from "react-i18next"
+import { useAppDialog } from "@/stores/app-dialog-store"
 import { useResearchStore } from "@/stores/research-store"
 
 const typeConfig: Record<ReviewItem["type"], { icon: typeof AlertTriangle; color: string }> = {
@@ -31,6 +32,7 @@ const typeConfig: Record<ReviewItem["type"], { icon: typeof AlertTriangle; color
 
 export function ReviewView() {
   const { t } = useTranslation()
+  const appDialog = useAppDialog()
   const items = useReviewStore((s) => s.items)
   const resolveItem = useReviewStore((s) => s.resolveItem)
   const dismissItem = useReviewStore((s) => s.dismissItem)
@@ -45,7 +47,7 @@ export function ReviewView() {
     if (action === "__deep_research__" && project) {
       const searchConfig = useWikiStore.getState().searchApiConfig
       if (!hasConfiguredDeepResearchSources(searchConfig)) {
-        window.alert(t("research.notConfigured"))
+        await appDialog.alert({ message: t("research.notConfigured") })
         return
       }
       if (item) {
@@ -227,7 +229,7 @@ export function ReviewView() {
     } else {
       resolveItem(id, action)
     }
-  }, [project, items, resolveItem, setFileTree])
+  }, [appDialog, project, items, resolveItem, setFileTree, t])
 
   const pending = items.filter((i) => !i.resolved)
   const resolved = items.filter((i) => i.resolved)

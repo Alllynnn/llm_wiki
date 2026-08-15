@@ -11,6 +11,7 @@ import {
   type StructuralLintFinding,
   type StructuralLintPage,
 } from "@/lib/lint-structural-core"
+import type { LintConfig } from "@/lib/lint-config"
 
 export interface LintResult {
   type: "orphan" | "broken-link" | "no-outlinks" | "semantic"
@@ -116,6 +117,7 @@ function isAbortError(error: unknown): boolean {
 export interface StructuralLintOptions {
   signal?: AbortSignal
   onProgress?: (completed: number, total: number) => void
+  config?: LintConfig
 }
 
 function runStructuralWorker(
@@ -123,7 +125,7 @@ function runStructuralWorker(
   options: StructuralLintOptions,
 ): Promise<StructuralLintFinding[]> {
   if (typeof Worker === "undefined") {
-    return Promise.resolve(computeStructuralLint(pages, options.onProgress))
+    return Promise.resolve(computeStructuralLint(pages, options.onProgress, options.config))
   }
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./lint-structural.worker.ts", import.meta.url), { type: "module" })
@@ -155,7 +157,7 @@ function runStructuralWorker(
       worker.terminate()
       resolve(event.data.findings ?? [])
     }
-    worker.postMessage({ pages })
+    worker.postMessage({ pages, config: options.config ?? {} })
   })
 }
 
