@@ -1,7 +1,9 @@
 //! HTTP handlers for wiki page CRUD (with ETag-based optimistic concurrency),
 //! search, and graph.
 
-use axum::extract::{Query, State};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -16,8 +18,32 @@ use crate::storage::paths::{resolve_under, resolve_project_path};
 pub fn wiki_router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/wiki/page", get(read_page).put(write_page))
+        .route(
+            "/api/v1/projects/{project_id}/pages/embed",
+            post(embed_page),
+        )
         .route("/api/v1/search", post(search))
         .route("/api/v1/graph", get(graph))
+}
+
+const MAX_IN_FLIGHT_PAGE_EMBEDS: usize = 4;
+static IN_FLIGHT_PAGE_EMBEDS: AtomicUsize = AtomicUsize::new(0);
+
+struct PageEmbedSlot;
+
+impl Drop for PageEmbedSlot {
+    fn drop(&mut self) {
+        IN_FLIGHT_PAGE_EMBEDS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn try_acquire_page_embed_slot() -> Option<PageEmbedSlot> {
+    IN_FLIGHT_PAGE_EMBEDS
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            (current < MAX_IN_FLIGHT_PAGE_EMBEDS).then_some(current + 1)
+        })
+        .ok()
+        .map(|_| PageEmbedSlot)
 }
 
 // ── ETag helper ─────────────────────────────────────────────────────────────
@@ -221,6 +247,116 @@ async fn write_page(
         axum::http::HeaderValue::from_str(&format!("\"{new_etag}\"")).unwrap(),
     );
     Ok(resp)
+}
+
+// ── POST /api/v1/projects/{project_id}/pages/embed ──────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EmbedPageRequest {
+    path: String,
+    #[serde(default)]
+    force: bool,
+}
+
+async fn embed_page(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    AxumPath(project_id): AxumPath<String>,
+    Json(req): Json<EmbedPageRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if req.path.trim().is_empty() {
+        return Err(ApiError::bad_request("BAD_REQUEST", "path is required"));
+    }
+    let project_root = resolve_project_identifier(&state, &user.id, &project_id)?;
+    let user_config = state
+        .user_data
+        .load_config(&user.id)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let embedding_config = crate::http::user_config::embedding_config_from_user(&user_config)
+        .ok_or_else(|| {
+            ApiError::bad_request("EMBEDDING_NOT_CONFIGURED", "Embedding is not configured")
+        })?;
+    let _slot = try_acquire_page_embed_slot().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "EMBEDDING_BUSY",
+            "Too many page indexing requests are already running",
+        )
+    })?;
+
+    let result = crate::commands::page_embedding::embed_wiki_page(
+        &project_root.to_string_lossy(),
+        &req.path,
+        embedding_config,
+        req.force,
+    )
+    .await
+    .map_err(page_embedding_error)?;
+    let resolved_id = crate::core::project::project_id_from_canonical_path(&project_root);
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "projectId": resolved_id,
+        "result": result,
+    })))
+}
+
+fn resolve_project_identifier(
+    state: &AppState,
+    user_id: &str,
+    requested: &str,
+) -> Result<std::path::PathBuf, ApiError> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err(ApiError::bad_request("BAD_REQUEST", "project id is required"));
+    }
+    let current_id = if requested.eq_ignore_ascii_case("current") {
+        state.user_data.recently_opened(user_id).into_iter().next()
+    } else {
+        None
+    };
+    let requested_id = current_id.as_deref().unwrap_or(requested);
+    let root = state
+        .config
+        .projects_root
+        .canonicalize()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    for entry in std::fs::read_dir(&root).map_err(|e| ApiError::internal(e.to_string()))? {
+        let entry = entry.map_err(|e| ApiError::internal(e.to_string()))?;
+        let path = entry.path();
+        if !path.is_dir()
+            || !path.join("wiki").is_dir()
+            || !(path.join("schema.md").exists() || path.join(".llm-wiki/schema.md").exists())
+        {
+            continue;
+        }
+        let id = crate::core::project::project_id_from_canonical_path(&path);
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy();
+        if requested_id == id || requested_id == name || requested_id == rel {
+            return Ok(path);
+        }
+    }
+    Err(ApiError::new(
+        StatusCode::NOT_FOUND,
+        "NOT_FOUND",
+        format!("project not found: {requested}"),
+    ))
+}
+
+fn page_embedding_error(error: crate::commands::page_embedding::PageEmbeddingError) -> ApiError {
+    use crate::commands::page_embedding::PageEmbeddingErrorKind;
+    let (status, code) = match error.kind {
+        PageEmbeddingErrorKind::InvalidRequest => (StatusCode::BAD_REQUEST, "BAD_REQUEST"),
+        PageEmbeddingErrorKind::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND"),
+        PageEmbeddingErrorKind::Provider => (StatusCode::BAD_GATEWAY, "EMBEDDING_PROVIDER"),
+        PageEmbeddingErrorKind::Storage => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "EMBEDDING_STORAGE")
+        }
+        PageEmbeddingErrorKind::Conflict => (StatusCode::CONFLICT, "EMBEDDING_CONFLICT"),
+        PageEmbeddingErrorKind::Timeout => (StatusCode::GATEWAY_TIMEOUT, "EMBEDDING_TIMEOUT"),
+    };
+    ApiError::new(status, code, error.message)
 }
 
 // ── POST /api/v1/search ──────────────────────────────────────────────────────
