@@ -37,6 +37,19 @@ pub(crate) fn embedding_config_from_user(cfg: &Value) -> Option<SearchEmbeddingC
     Some(config)
 }
 
+pub(crate) fn command_embedding_config_from_user(
+    cfg: &Value,
+) -> Option<crate::commands::search::SearchEmbeddingConfig> {
+    let config = serde_json::from_value::<crate::commands::search::SearchEmbeddingConfig>(
+        cfg.get("embeddingConfig")?.clone(),
+    )
+    .ok()?;
+    if !config.enabled || config.endpoint.trim().is_empty() || config.model.trim().is_empty() {
+        return None;
+    }
+    Some(config)
+}
+
 fn provider_config_from_llm_config(llm: &Value) -> Result<ProviderConfig, String> {
     let provider = llm
         .get("provider")
@@ -191,6 +204,26 @@ mod tests {
             embedding.extra_headers.as_ref().and_then(|h| h.get("X-Route")).map(String::as_str),
             Some("emb")
         );
+    }
+
+    #[test]
+    fn command_embedding_config_reads_frontend_embedding_config() {
+        let config = command_embedding_config_from_user(&json!({
+            "embeddingConfig": {
+                "enabled": true,
+                "endpoint": "http://127.0.0.1:7860/v1/embeddings",
+                "apiKey": "k",
+                "model": "embed-test",
+                "outputDimensionality": 768,
+                "maxChunkChars": 1200,
+                "overlapChunkChars": 150
+            }
+        }))
+        .unwrap();
+        assert_eq!(config.model, "embed-test");
+        assert_eq!(config.output_dimensionality, Some(768.0));
+        assert_eq!(config.max_chunk_chars, Some(1200));
+        assert_eq!(config.overlap_chunk_chars, Some(150));
     }
 
     #[test]

@@ -29,6 +29,8 @@ import {
 } from "@/lib/project-store"
 import { loadReviewItems, loadLintItems, loadChatHistory } from "@/lib/persist"
 import { setupAutoSave } from "@/lib/auto-save"
+import { DEFAULT_SOURCE_WATCH_CONFIG } from "@/lib/source-watch-config"
+import { useGlobalShortcut } from "@/hooks/use-global-shortcut"
 import { AppLayout } from "@/components/layout/app-layout"
 import { WelcomeScreen } from "@/components/project/welcome-screen"
 import { CreateProjectDialog } from "@/components/project/create-project-dialog"
@@ -40,12 +42,14 @@ import { apiCall, ApiError } from "@/lib/api"
 import { setAuthUser } from "@/lib/auth"
 import { clearConfigCache } from "@/lib/user-config"
 import { resolveWikiPathFromBrowserPath } from "@/lib/wiki-page-resolver"
+import { useAppDialog } from "@/stores/app-dialog-store"
 
 function applyDocumentZoom(level: number) {
   document.documentElement.style.fontSize = `${BASE_FONT_SIZE_PX * level}px`
 }
 
 function App() {
+  const appDialog = useAppDialog()
   const project = useWikiStore((s) => s.project)
   const setProject = useWikiStore((s) => s.setProject)
   const setFileTree = useWikiStore((s) => s.setFileTree)
@@ -59,11 +63,24 @@ function App() {
   const [authUser, setAuthUser_] = useState<AuthUser | null | false>(null)
   const initialBrowserWikiPathRef = useRef(window.location.pathname)
 
+  function isCurrentProject(proj: WikiProject): boolean {
+    const current = useWikiStore.getState().project
+    return current?.id === proj.id && current.path === proj.path
+  }
+
   // Set up auto-save once on mount. The Tauri-era clip watcher (polling the
   // local Web Clipper daemon on :19827) is not part of the browser/LAN build.
   useEffect(() => {
     setupAutoSave()
   }, [])
+
+  // Cmd+, on macOS or Ctrl+, on Windows/Linux opens settings.
+  useGlobalShortcut({
+    ",": {
+      callback: () => setActiveView("settings"),
+      allowInTextInput: true,
+    },
+  })
 
   useEffect(() => {
     // Apply interface zoom globally, including welcome/settings screens. We
@@ -318,6 +335,21 @@ function App() {
       useWikiStore.getState().bumpDataVersion()
       await saveLastProject(proj)
 
+      // Apply the project-specific worker limit before restoring its queue so
+      // newly enqueued tasks never start with another project's concurrency.
+      const { setIngestWorkerLimit } = await import("@/lib/ingest-queue")
+      try {
+        const config = await loadSourceWatchConfig(proj.id)
+        if (!isCurrentProject(proj)) return
+        useWikiStore.getState().setSourceWatchConfig(config)
+        setIngestWorkerLimit(config.ingestConcurrency)
+      } catch (err) {
+        console.error("Failed to load ingest concurrency:", err)
+        if (!isCurrentProject(proj)) return
+        useWikiStore.getState().setSourceWatchConfig(DEFAULT_SOURCE_WATCH_CONFIG)
+        setIngestWorkerLimit(DEFAULT_SOURCE_WATCH_CONFIG.ingestConcurrency)
+      }
+
       // Restore ingest queue (resume interrupted tasks). Keyed by the
       // project's stable UUID so the queue still finds the right project
       // even if the filesystem path changed since the task was enqueued.
@@ -409,7 +441,7 @@ function App() {
       const validated = await openProject(proj.path)
       await handleProjectOpened(validated)
     } catch (err) {
-      window.alert(`Failed to open project: ${err}`)
+      await appDialog.alert({ message: `Failed to open project: ${err}` })
     }
   }
 
@@ -422,7 +454,7 @@ function App() {
       const proj = await openProject(path)
       await handleProjectOpened(proj)
     } catch (err) {
-      window.alert(`Failed to open project: ${err}`)
+      await appDialog.alert({ message: `Failed to open project: ${err}` })
     }
   }
 

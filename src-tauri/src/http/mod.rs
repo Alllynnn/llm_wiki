@@ -682,6 +682,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn page_embed_route_requires_session_auth() {
+        let (_dir, state, _root) = build_state_with_user_and_projects_root("alice", "pw");
+        let app = main_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/projects/proj/pages/embed")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"path":"wiki/foo.md"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn page_embed_route_uses_shared_user_embedding_config() {
+        let mut server = mockito::Server::new_async().await;
+        let embedding = server
+            .mock("POST", "/v1/embeddings")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}]}"#)
+            .create_async()
+            .await;
+
+        let (_dir, state, root) = build_state_with_user_and_projects_root("alice", "pw");
+        state
+            .user_data
+            .save_config(
+                "alice",
+                &serde_json::json!({
+                    "embeddingConfig": {
+                        "enabled": true,
+                        "endpoint": format!("{}/v1/embeddings", server.url()),
+                        "apiKey": "test-key",
+                        "model": "embed-test"
+                    }
+                }),
+            )
+            .unwrap();
+        let project_path = root.join("proj").canonicalize().unwrap();
+        let project_id = crate::core::project::project_id_from_canonical_path(&project_path);
+        let app = main_router(state.clone());
+        let cookie = login(app.clone(), "alice", "pw").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/projects/{project_id}/pages/embed"))
+                    .header("content-type", "application/json")
+                    .header("cookie", cookie)
+                    .body(axum::body::Body::from(r#"{"path":"wiki/foo.md"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let body = to_bytes(resp.into_body(), 16 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["projectId"], project_id);
+        assert_eq!(value["result"]["path"], "wiki/foo.md");
+        assert_eq!(value["result"]["status"], "indexed");
+        assert_eq!(value["result"]["vectorsWritten"], 1);
+        embedding.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn wiki_page_write_without_if_match_is_400() {
         let (_dir, state, _root) = build_state_with_user_and_projects_root("alice", "pw");
         let app = main_router(state.clone());

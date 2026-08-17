@@ -646,6 +646,7 @@ fn tool_top_k(input: &Value) -> usize {
         .clamp(1, 10)
 }
 
+#[cfg(test)]
 pub fn write_wiki_page_with_options(
     project_path: &str,
     rel_path: &str,
@@ -1179,8 +1180,8 @@ pub async fn run_web_search(
     if provider.is_empty() || provider == "none" {
         return Err("Web search provider is not configured.".to_string());
     }
-    let max_results = top_k.clamp(1, 20);
-    let client = reqwest::Client::builder()
+    let max_results = web_search_result_limit(&provider, top_k);
+    let client = crate::proxy::configure_http_client(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(WEB_SEARCH_TIMEOUT_SECS))
         .build()
         .map_err(|err| format!("Failed to build web search client: {err}"))?;
@@ -1190,6 +1191,7 @@ pub async fn run_web_search(
         "tavily" => tavily_search(&client, query, &config, max_results).await?,
         "ollama" => ollama_search(&client, query, &config, max_results).await?,
         "brave" => brave_search(&client, query, &config, max_results).await?,
+        "bocha" => bocha_search(&client, query, &config, max_results).await?,
         "serpapi" => serpapi_search(&client, query, &config, max_results).await?,
         other => {
             return Err(format!(
@@ -1198,6 +1200,13 @@ pub async fn run_web_search(
         }
     };
     Ok(web_items_to_references(raw, max_results))
+}
+
+fn web_search_result_limit(provider: &str, requested: usize) -> usize {
+    // Bocha documents a 1-50 range. Existing providers retain the historical
+    // 20-result ceiling so adding Bocha cannot increase their request cost.
+    let provider_max = if provider == "bocha" { 50 } else { 20 };
+    requested.clamp(1, provider_max)
 }
 
 pub async fn run_anytxt_search(
@@ -1233,7 +1242,7 @@ pub async fn run_anytxt_search(
         .filter_ext
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "*".to_string());
-    let client = reqwest::Client::builder()
+    let client = crate::proxy::configure_http_client(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(WEB_SEARCH_TIMEOUT_SECS))
         .build()
         .map_err(|err| format!("Failed to build AnyTXT client: {err}"))?;
@@ -1802,6 +1811,58 @@ async fn brave_search(
     .await
 }
 
+async fn bocha_search(
+    client: &reqwest::Client,
+    query: &str,
+    config: &WebSearchConfig,
+    max_results: usize,
+) -> Result<Vec<WebSearchItem>, String> {
+    let key = required_api_key(config, "Bocha")?;
+    let response = client
+        .post("https://api.bocha.cn/v1/web-search")
+        .header("Accept", "application/json")
+        .bearer_auth(key)
+        .json(&json!({
+            "query": query,
+            "freshness": "noLimit",
+            "summary": true,
+            "count": max_results.clamp(1, 50)
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("Network error reaching Bocha Search: {err}"))?;
+    parse_web_json_response(response, "Bocha Search", parse_bocha_results).await
+}
+
+fn parse_bocha_results(value: Value) -> Vec<WebSearchItem> {
+    value
+        .get("data")
+        .and_then(|data| data.get("webPages"))
+        .and_then(|pages| pages.get("value"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|item| WebSearchItem {
+            title: item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("Untitled")
+                .to_string(),
+            url: item
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            snippet: item
+                .get("summary")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("snippet").and_then(Value::as_str))
+                .unwrap_or("")
+                .to_string(),
+        })
+        .collect()
+}
+
 async fn serpapi_search(
     client: &reqwest::Client,
     query: &str,
@@ -1873,6 +1934,20 @@ async fn parse_web_json_response(
 }
 
 fn provider_payload_error(provider: &str, value: &Value) -> Option<String> {
+    if provider == "Bocha Search" {
+        let code = value.get("code").and_then(Value::as_i64);
+        if code != Some(200) {
+            let message = value
+                .get("msg")
+                .and_then(Value::as_str)
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or("unknown API error");
+            return Some(format!(
+                "{provider} failed (code {}): {message}",
+                code.unwrap_or(0)
+            ));
+        }
+    }
     if provider == "Brave Search" && value.get("web").is_none() {
         let message = value.get("message").and_then(Value::as_str)?;
         return Some(format!("{provider} search failed: {message}"));
@@ -2377,12 +2452,22 @@ pub fn search_sources(
             "pdf"
                 | "doc"
                 | "docx"
+                | "docm"
+                | "ppt"
+                | "pps"
+                | "pot"
                 | "pptx"
+                | "pptm"
+                | "ppsx"
+                | "ppsm"
                 | "xls"
                 | "xlsx"
+                | "xlsm"
+                | "xlsb"
                 | "odt"
                 | "ods"
                 | "odp"
+                | "rtf"
                 | "epub"
                 | "mobi"
         ) {
@@ -2743,6 +2828,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("llm-wiki-context-{}", Uuid::new_v4()));
         fs::create_dir_all(root.join(".llm-wiki")).unwrap();
         fs::create_dir_all(root.join("wiki/entities")).unwrap();
+        fs::write(
+            root.join(".llm-wiki/history-settings.json"),
+            r#"{"enabled":true,"maxVersionsPerFile":10}"#,
+        )
+        .unwrap();
         let alpha = root.join("wiki/entities/alpha.md");
         let beta = root.join("wiki/entities/beta.md");
         fs::write(
@@ -3451,6 +3541,55 @@ mod tests {
             provider_payload_error("Brave Search", &value),
             Some("Brave Search search failed: invalid subscription token".to_string())
         );
+    }
+
+    #[test]
+    fn bocha_payload_error_requires_success_code() {
+        let failure = json!({ "code": 401, "msg": "invalid api key" });
+        assert_eq!(
+            provider_payload_error("Bocha Search", &failure),
+            Some("Bocha Search failed (code 401): invalid api key".to_string())
+        );
+        assert_eq!(
+            provider_payload_error("Bocha Search", &json!({ "code": 200, "data": {} })),
+            None
+        );
+    }
+
+    #[test]
+    fn bocha_results_prefer_summary_and_fall_back_to_snippet() {
+        let items = parse_bocha_results(json!({
+            "code": 200,
+            "data": {
+                "webPages": {
+                    "value": [
+                        {
+                            "name": "Summary result",
+                            "url": "https://example.com/summary",
+                            "snippet": "short",
+                            "summary": "long summary"
+                        },
+                        {
+                            "name": "Snippet result",
+                            "url": "https://example.com/snippet",
+                            "summary": null,
+                            "snippet": "fallback snippet"
+                        }
+                    ]
+                }
+            }
+        }));
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "Summary result");
+        assert_eq!(items[0].snippet, "long summary");
+        assert_eq!(items[1].snippet, "fallback snippet");
+    }
+
+    #[test]
+    fn bocha_accepts_fifty_results_without_changing_other_provider_limits() {
+        assert_eq!(web_search_result_limit("bocha", 100), 50);
+        assert_eq!(web_search_result_limit("tavily", 100), 20);
+        assert_eq!(web_search_result_limit("bocha", 0), 1);
     }
 
     #[test]

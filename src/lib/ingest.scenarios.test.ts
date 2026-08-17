@@ -23,8 +23,10 @@ vi.mock("@/commands/fs", () => realFs)
 // generationResponse. Any further calls return empty (shouldn't happen in a
 // typical autoIngest run).
 let pendingResponses: string[] = []
+let streamCallCount = 0
 vi.mock("./llm-client", () => ({
   streamChat: vi.fn(async (_cfg, _msgs, cb) => {
+    streamCallCount += 1
     const resp = pendingResponses.shift() ?? ""
     cb.onToken(resp)
     cb.onDone()
@@ -54,6 +56,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   pendingResponses = []
+  streamCallCount = 0
   useReviewStore.setState({ items: [] })
   useActivityStore.setState({ items: [] })
   useChatStore.setState({
@@ -195,6 +198,90 @@ describe("ingest scenarios (fixture-driven)", () => {
       await assertOutcome(scenario, ctx.tmp.path)
     },
   )
+
+  it("routes project mutations through the injected commit runner", async () => {
+    const scenario = ingestScenarios[0]
+    ctx = await setup(scenario)
+    const sourceFullPath = path.join(ctx.tmp.path, scenario.source.path)
+    let commitCalls = 0
+    let commitActive = false
+    let writeCallbacks = 0
+
+    const written = await autoIngest(
+      ctx.tmp.path,
+      sourceFullPath,
+      useWikiStore.getState().llmConfig,
+      undefined,
+      undefined,
+      (relativePath) => {
+        writeCallbacks += 1
+        expect(commitActive, `write callback escaped commit boundary: ${relativePath}`).toBe(true)
+      },
+      {
+        runCommit: async (operation) => {
+          commitCalls += 1
+          commitActive = true
+          try {
+            return await operation()
+          } finally {
+            commitActive = false
+          }
+        },
+      },
+    )
+
+    expect(commitCalls).toBe(1)
+    expect(written.length).toBeGreaterThan(0)
+    expect(writeCallbacks).toBeGreaterThan(0)
+  })
+
+  it("routes cache-hit mutations through the injected commit runner", async () => {
+    const scenario = ingestScenarios[0]
+    ctx = await setup(scenario)
+    const sourceFullPath = path.join(ctx.tmp.path, scenario.source.path)
+    const firstWritten = await autoIngest(
+      ctx.tmp.path,
+      sourceFullPath,
+      useWikiStore.getState().llmConfig,
+    )
+    let commitCalls = 0
+
+    const cachedWritten = await autoIngest(
+      ctx.tmp.path,
+      sourceFullPath,
+      useWikiStore.getState().llmConfig,
+      undefined,
+      undefined,
+      undefined,
+      {
+        runCommit: async (operation) => {
+          commitCalls += 1
+          return operation()
+        },
+      },
+    )
+
+    expect(commitCalls).toBe(1)
+    expect(cachedWritten).toEqual(firstWritten)
+    const activities = useActivityStore.getState().items
+    expect(activities.some((item) => item.detail.includes("Skipped (unchanged)"))).toBe(true)
+  })
+
+  it("serializes concurrent ingestion of the same source and reuses its cache", async () => {
+    const scenario = ingestScenarios[0]
+    ctx = await setup(scenario)
+    const sourceFullPath = path.join(ctx.tmp.path, scenario.source.path)
+
+    const [firstWritten, secondWritten] = await Promise.all([
+      autoIngest(ctx.tmp.path, sourceFullPath, useWikiStore.getState().llmConfig),
+      autoIngest(ctx.tmp.path, sourceFullPath, useWikiStore.getState().llmConfig),
+    ])
+
+    expect(streamCallCount).toBe(2)
+    expect(secondWritten).toEqual(firstWritten)
+    const activities = useActivityStore.getState().items
+    expect(activities.some((item) => item.detail.includes("Skipped (unchanged)"))).toBe(true)
+  })
 
   it("drops generated pages whose frontmatter type disagrees with schema routing", async () => {
     ctx = { tmp: await createTempProject("ingest-schema-routing") }

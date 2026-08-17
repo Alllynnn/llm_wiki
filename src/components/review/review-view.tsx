@@ -19,6 +19,8 @@ import { normalizePath } from "@/lib/path-utils"
 import { hasConfiguredDeepResearchSources } from "@/lib/web-search"
 import { makeQueryFileName } from "@/lib/wiki-filename"
 import { useTranslation } from "react-i18next"
+import { useAppDialog } from "@/stores/app-dialog-store"
+import { useResearchStore } from "@/stores/research-store"
 
 const typeConfig: Record<ReviewItem["type"], { icon: typeof AlertTriangle; color: string }> = {
   contradiction: { icon: AlertTriangle, color: "text-amber-500" },
@@ -30,6 +32,7 @@ const typeConfig: Record<ReviewItem["type"], { icon: typeof AlertTriangle; color
 
 export function ReviewView() {
   const { t } = useTranslation()
+  const appDialog = useAppDialog()
   const items = useReviewStore((s) => s.items)
   const resolveItem = useReviewStore((s) => s.resolveItem)
   const dismissItem = useReviewStore((s) => s.dismissItem)
@@ -44,15 +47,14 @@ export function ReviewView() {
     if (action === "__deep_research__" && project) {
       const searchConfig = useWikiStore.getState().searchApiConfig
       if (!hasConfiguredDeepResearchSources(searchConfig)) {
-        window.alert(t("research.notConfigured"))
+        await appDialog.alert({ message: t("research.notConfigured") })
         return
       }
       if (item) {
         const llmConfig = useWikiStore.getState().llmConfig
         // Use pre-generated search queries if available, otherwise fall back to title
         const topic = item.title.replace(/^(Save to Wiki|Create|Research)[:\s]*/i, "").trim() || item.description.split("\n")[0]
-        queueResearch(pp, topic, llmConfig, searchConfig, item.searchQueries)
-        resolveItem(id, "Queued for research")
+        queueResearch(pp, topic, llmConfig, searchConfig, item.searchQueries, id)
       } else {
         resolveItem(id, action)
       }
@@ -159,8 +161,7 @@ export function ReviewView() {
       if (item) {
         const llmConfig = useWikiStore.getState().llmConfig
         const topic = action.replace(/^research\s*/i, "").trim() || item.description.split("\n")[0]
-        queueResearch(pp, topic, llmConfig, searchConfig)
-        resolveItem(id, "Queued for deep research")
+        queueResearch(pp, topic, llmConfig, searchConfig, undefined, id)
       } else {
         resolveItem(id, action)
       }
@@ -228,7 +229,7 @@ export function ReviewView() {
     } else {
       resolveItem(id, action)
     }
-  }, [project, items, resolveItem, setFileTree])
+  }, [appDialog, project, items, resolveItem, setFileTree, t])
 
   const pending = items.filter((i) => !i.resolved)
   const resolved = items.filter((i) => i.resolved)
@@ -300,6 +301,21 @@ function ReviewCard({
   const { t } = useTranslation()
   const config = typeConfig[item.type]
   const Icon = config.icon
+  const researchTask = useResearchStore((state) => {
+    const matching = state.tasks.filter((task) => task.sourceReviewId === item.id)
+    return matching.find((task) => (
+      task.status === "queued" ||
+      task.status === "searching" ||
+      task.status === "synthesizing" ||
+      task.status === "saving"
+    )) ?? matching[matching.length - 1]
+  })
+  const researchRunning = researchTask !== undefined && (
+    researchTask.status === "queued" ||
+    researchTask.status === "searching" ||
+    researchTask.status === "synthesizing" ||
+    researchTask.status === "saving"
+  )
 
   return (
     <div
@@ -329,12 +345,19 @@ function ReviewCard({
       )}
 
       {!item.resolved ? (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="space-y-2">
+          {researchRunning && (
+            <div className="text-xs text-muted-foreground">
+              {t(`research.status.${researchTask.status}`)}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-1.5">
           {(item.type === "suggestion" || item.type === "missing-page") && (
             <Button
               variant="default"
               size="sm"
               className="h-7 text-xs gap-1"
+              disabled={researchRunning}
               onClick={() => onResolve(item.id, "__deep_research__")}
             >
               🔍 {t("research.title")}
@@ -346,11 +369,13 @@ function ReviewCard({
               variant="outline"
               size="sm"
               className="h-7 text-xs"
+              disabled={researchRunning}
               onClick={() => onResolve(item.id, opt.action)}
             >
               {opt.label}
             </Button>
           ))}
+          </div>
         </div>
       ) : (
         <div className="flex items-center gap-1 text-xs text-emerald-600">

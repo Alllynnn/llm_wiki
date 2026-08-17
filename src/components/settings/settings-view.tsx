@@ -26,6 +26,7 @@ import { loadSourceWatchConfig, saveLanguage, saveTheme, loadTheme } from "@/lib
 import { applyTheme, type AppTheme } from "@/lib/theme"
 import type { SettingsDraft, DraftSetter } from "./settings-types"
 import { normalizeSourceWatchConfig } from "@/lib/source-watch-config"
+import { setIngestWorkerLimit } from "@/lib/ingest-queue"
 import { LlmProviderSection } from "./sections/llm-provider-section"
 import { EmbeddingSection } from "./sections/embedding-section"
 import { MultimodalSection } from "./sections/multimodal-section"
@@ -136,6 +137,7 @@ function initialDraft(
     proxyEnabled: proxy.enabled,
     proxyUrl: proxy.url,
     proxyBypassLocal: proxy.bypassLocal,
+    proxyAcceptInvalidCerts: proxy.acceptInvalidCerts === true,
     scheduledImportEnabled: false,
     scheduledImportPath: "",
     scheduledImportInterval: 60,
@@ -144,6 +146,7 @@ function initialDraft(
     mineruBackend: mineru.backend || "cloud",
     mineruLocalEndpoint:
       mineru.localEndpoint || "http://127.0.0.1:8000",
+    mineruLocalToken: mineru.localToken || "",
     mineruLocalBackend: mineru.localBackend || "hybrid-engine",
     mineruLocalEffort: mineru.localEffort || "medium",
     mineruLocalParseMethod: mineru.localParseMethod || "auto",
@@ -236,11 +239,13 @@ export function SettingsView() {
       if (cancelled) return
       const normalized = normalizeSourceWatchConfig(config)
       setSourceWatchConfig(normalized)
+      setIngestWorkerLimit(normalized.ingestConcurrency)
       setDraftState((prev) => ({ ...prev, sourceWatchConfig: normalized }))
     }).catch(() => {
       if (cancelled) return
       const fallback = normalizeSourceWatchConfig()
       setSourceWatchConfig(fallback)
+      setIngestWorkerLimit(fallback.ingestConcurrency)
       setDraftState((prev) => ({ ...prev, sourceWatchConfig: fallback }))
     })
     return () => {
@@ -372,12 +377,14 @@ export function SettingsView() {
       enabled: draft.proxyEnabled,
       url: draft.proxyUrl.trim(),
       bypassLocal: draft.proxyBypassLocal,
+      acceptInvalidCerts: draft.proxyAcceptInvalidCerts,
     }
     const newSourceWatch = normalizeSourceWatchConfig(draft.sourceWatchConfig)
     const newMineruConfig = {
       enabled: draft.mineruEnabled,
       backend: draft.mineruBackend,
       localEndpoint: draft.mineruLocalEndpoint.trim(),
+      localToken: draft.mineruLocalToken.trim(),
       localBackend: draft.mineruLocalBackend,
       localEffort: draft.mineruLocalEffort,
       localParseMethod: draft.mineruLocalParseMethod,
@@ -411,6 +418,7 @@ export function SettingsView() {
     setOutputLanguage(draft.outputLanguage as typeof outputLanguage)
     setProxyConfig(newProxy)
     setSourceWatchConfig(newSourceWatch)
+    setIngestWorkerLimit(newSourceWatch.ingestConcurrency)
     setMaxHistoryMessages(draft.maxHistoryMessages)
     setMineruConfig(newMineruConfig)
     setApiConfig(newApiConfig)

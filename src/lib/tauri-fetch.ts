@@ -20,6 +20,9 @@ import { isLocalOrPrivateHttpEndpoint } from "@/lib/llm-providers"
  * from any environment without crashing at module load.
  */
 
+import { useWikiStore } from "@/stores/wiki-store"
+import { isProxyActive, type ProxyConfig } from "@/lib/proxy-config"
+
 let pluginFetchPromise: Promise<typeof globalThis.fetch> | null = null
 
 /**
@@ -51,6 +54,28 @@ const browserProxyAwareFetch: typeof globalThis.fetch = async (input, init) => {
   return proxyFetch(resolved.href, init)
 }
 
+type PluginRequestInit = RequestInit & {
+  danger?: {
+    acceptInvalidCerts?: boolean
+    acceptInvalidHostnames?: boolean
+  }
+}
+
+export function withProxyTlsSettings(
+  init: RequestInit | undefined,
+  proxy: ProxyConfig,
+): PluginRequestInit | undefined {
+  if (!isProxyActive(proxy) || proxy.acceptInvalidCerts !== true) return init
+  const pluginInit = init as PluginRequestInit | undefined
+  return {
+    ...pluginInit,
+    danger: {
+      ...pluginInit?.danger,
+      acceptInvalidCerts: true,
+    },
+  }
+}
+
 /**
  * Returns a fetch function that routes through Tauri's HTTP plugin in
  * production, falling back to the platform's native fetch in non-Tauri
@@ -70,7 +95,18 @@ export function getHttpFetch(): Promise<typeof globalThis.fetch> {
       pluginFetchPromise = Promise.resolve(browserProxyAwareFetch)
     } else {
       pluginFetchPromise = import("@tauri-apps/plugin-http")
-        .then((m) => m.fetch as unknown as typeof globalThis.fetch)
+        .then((m) => {
+          const pluginFetch = m.fetch
+          const configuredFetch: typeof globalThis.fetch = (input, init) => {
+            // Read at request time so changing Network settings takes effect
+            // immediately. The option is deliberately scoped to the proxy
+            // toggle; disabling the proxy restores normal TLS verification.
+            const proxy = useWikiStore.getState().proxyConfig
+            const requestInit = withProxyTlsSettings(init, proxy)
+            return pluginFetch(input, requestInit)
+          }
+          return configuredFetch
+        })
         .catch(() => globalThis.fetch.bind(globalThis))
     }
   }

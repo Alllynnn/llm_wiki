@@ -1,17 +1,22 @@
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { fileRawUrl } from "@/lib/api"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
 import rehypeKatex from "rehype-katex"
 import "katex/dist/katex.min.css"
+import { useTranslation } from "react-i18next"
+import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from "pdfjs-dist"
 import {
+  ExternalLink,
   FileText,
   Image as ImageIcon,
   Film,
   Music,
   FileSpreadsheet,
   FileQuestion,
+  Minus,
+  Plus,
 } from "lucide-react"
 import {
   getFileCategory,
@@ -47,7 +52,7 @@ export function FilePreview({ filePath, textContent }: FilePreviewProps) {
     case "audio":
       return <AudioPreview filePath={filePath} fileName={fileName} />
     case "pdf":
-      return <TextPreview filePath={filePath} content={textContent} label="PDF (extracted text)" />
+      return <PdfPreview filePath={filePath} content={textContent} />
     case "code":
       return <CodePreview filePath={filePath} content={textContent} />
     case "data":
@@ -64,21 +69,234 @@ export function FilePreview({ filePath, textContent }: FilePreviewProps) {
   }
 }
 
+function PdfPreview({ filePath, content }: { filePath: string; content: string }) {
+  const { t } = useTranslation()
+  const projectPath = useWikiStore((state) => state.project?.path ?? "")
+  const src = fileRawUrl(projectPath, filePath)
+  const [showText, setShowText] = useState(false)
+  const [page, setPage] = useState(1)
+  const [zoom, setZoom] = useState(100)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [document, setDocument] = useState<PDFDocumentProxy | null>(null)
+  const [pageCount, setPageCount] = useState(0)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+
+  useEffect(() => {
+    let disposed = false
+    let loadingTask: PDFDocumentLoadingTask | null = null
+    let loadedDocument: PDFDocumentProxy | null = null
+
+    setLoading(true)
+    setLoadError(null)
+    setDocument(null)
+    setPageCount(0)
+    setPage(1)
+
+    void (async () => {
+      try {
+        const response = await fetch(src, { credentials: "include" })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+        const reportedSize = Number(response.headers.get("content-length") ?? 0)
+        if (reportedSize > MAX_INLINE_PDF_BYTES) throw new Error(t("preview.pdfTooLarge"))
+
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        if (bytes.byteLength > MAX_INLINE_PDF_BYTES) throw new Error(t("preview.pdfTooLarge"))
+
+        const [{ getDocument, GlobalWorkerOptions }, workerModule] = await Promise.all([
+          import("pdfjs-dist/legacy/build/pdf.mjs"),
+          import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
+        ])
+        GlobalWorkerOptions.workerSrc = workerModule.default
+        loadingTask = getDocument({ data: bytes })
+        loadedDocument = await loadingTask.promise
+        if (disposed) {
+          await loadedDocument.destroy()
+          return
+        }
+        setDocument(loadedDocument)
+        setPageCount(loadedDocument.numPages)
+      } catch (error) {
+        if (!disposed) setLoadError(error instanceof Error ? error.message : String(error))
+      } finally {
+        if (!disposed) setLoading(false)
+      }
+    })()
+
+    return () => {
+      disposed = true
+      if (loadingTask) void loadingTask.destroy()
+      else if (loadedDocument) void loadedDocument.destroy()
+    }
+  }, [reloadKey, src, t])
+
+  useEffect(() => {
+    if (!document || showText) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+    let disposed = false
+    let renderTask: RenderTask | null = null
+
+    void (async () => {
+      try {
+        const pdfPage = await document.getPage(Math.min(page, document.numPages))
+        if (disposed) return
+        const viewport = pdfPage.getViewport({ scale: (zoom / 100) * 1.25 })
+        const pixelRatio = window.devicePixelRatio || 1
+        const context = canvas.getContext("2d")
+        if (!context) throw new Error("Canvas 2D rendering is unavailable")
+        canvas.width = Math.floor(viewport.width * pixelRatio)
+        canvas.height = Math.floor(viewport.height * pixelRatio)
+        canvas.style.width = `${Math.floor(viewport.width)}px`
+        canvas.style.height = `${Math.floor(viewport.height)}px`
+        renderTask = pdfPage.render({
+          canvas,
+          canvasContext: context,
+          viewport,
+          transform: pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0],
+        })
+        await renderTask.promise
+      } catch (error) {
+        if (!disposed && !(error instanceof Error && error.name === "RenderingCancelledException")) {
+          setLoadError(error instanceof Error ? error.message : String(error))
+        }
+      }
+    })()
+
+    return () => {
+      disposed = true
+      renderTask?.cancel()
+    }
+  }, [document, page, showText, zoom])
+
+  return (
+    <div className="flex h-full min-h-0 flex-col p-4">
+      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate" title={filePath}>{filePath}</span>
+        <button
+          type="button"
+          className="rounded border px-2 py-1 hover:bg-muted"
+          onClick={() => setShowText((value) => !value)}
+        >
+          {showText ? t("preview.pdfDocument") : t("preview.pdfText")}
+        </button>
+        {!showText && (
+          <>
+            <button
+              type="button"
+              className="rounded p-1 hover:bg-muted"
+              onClick={() => setZoom((value) => Math.max(50, value - 25))}
+              aria-label="Zoom out"
+            >
+              <Minus className="h-3.5 w-3.5" />
+            </button>
+            <span className="w-10 text-center">{zoom}%</span>
+            <button
+              type="button"
+              className="rounded p-1 hover:bg-muted"
+              onClick={() => setZoom((value) => Math.min(300, value + 25))}
+              aria-label="Zoom in"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+            <label className="ml-1 flex items-center gap-1">
+              {t("preview.pdfPage")}
+              <input
+                value={page}
+                min={1}
+                max={pageCount || undefined}
+                type="number"
+                onChange={(event) => setPage(clampPdfPage(Number(event.target.value) || 1, pageCount))}
+                className="w-14 rounded border bg-background px-1 py-0.5"
+              />
+            </label>
+            <span>/ {pageCount || "–"}</span>
+          </>
+        )}
+        <a
+          href={src}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded p-1 hover:bg-muted"
+          title={t("preview.openWithSystem")}
+          aria-label={t("preview.openWithSystem")}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      </div>
+      <div className="min-h-0 flex-1 overflow-hidden rounded-md border bg-white">
+        {showText ? (
+          <TextPreview filePath={filePath} content={content} label="PDF text" />
+        ) : loading ? (
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            {t("preview.pdfLoading")}
+          </div>
+        ) : loadError ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
+            <FileQuestion className="h-8 w-8" />
+            <p>{t("preview.pdfLoadError")}</p>
+            <p className="max-w-xl break-words text-xs opacity-70">{loadError}</p>
+            <button
+              type="button"
+              className="rounded border px-3 py-1.5 hover:bg-muted"
+              onClick={() => setReloadKey((value) => value + 1)}
+            >
+              {t("preview.reload")}
+            </button>
+          </div>
+        ) : (
+          <div className="h-full overflow-auto bg-muted/30 p-4">
+            <canvas ref={canvasRef} className="mx-auto bg-white shadow-sm" />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const MAX_INLINE_PDF_BYTES = 128 * 1024 * 1024
+
+export function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes
+}
+
+export function clampPdfPage(page: number, pageCount: number): number {
+  return Math.min(Math.max(1, Math.trunc(page)), Math.max(1, pageCount))
+}
+
 function extractedTextLabel(filePath: string): string {
   switch (getFileExtension(filePath)) {
     case "doc":
       return "Word DOC (extracted text)"
     case "docx":
+    case "docm":
       return "Word DOCX (extracted text)"
+    case "ppt":
+    case "pps":
+    case "pot":
     case "pptx":
+    case "pptm":
+    case "ppsx":
+    case "ppsm":
       return "PowerPoint (extracted text)"
     case "xls":
     case "xlsx":
+    case "xlsm":
+    case "xlsb":
       return "Spreadsheet (extracted text)"
     case "odt":
     case "ods":
     case "odp":
       return "OpenDocument (extracted text)"
+    case "rtf":
+      return "Rich Text Format (extracted text)"
     default:
       return "Extracted text"
   }

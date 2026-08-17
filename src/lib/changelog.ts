@@ -26,6 +26,74 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.6.9",
+    date: "2026-08-14",
+    highlights: {
+      en: [
+        "Added a single-page Wiki vector indexing API and MCP tool with safe incremental updates.",
+        "Added an answer context details panel for inspecting context size, categorized references, and knowledge-graph evidence.",
+        "Added streaming Chat API responses and concurrent Ingest processing for faster external integrations and bulk imports.",
+        "Made file history opt-in and configurable, with bounded version retention.",
+        "Expanded scheduled imports with cross-project monitoring and source name or path filtering.",
+        "Added external source-file opening, a global Settings shortcut, and Russian and Italian interface translations.",
+        "Added support for authenticated local MinerU and improved trusted proxy TLS options, CJK filenames, and structured data preservation during Ingest.",
+        "Improved existing features and fixed stability, compatibility, indexing, and data-integrity issues.",
+      ],
+      zh: [
+        "新增单个 Wiki 页面向量索引 API 和 MCP 工具，并支持安全的增量更新。",
+        "新增回答上下文详情面板，可查看上下文长度、分类引用和知识图谱证据。",
+        "Chat API 新增流式输出，并支持并发 Ingest，提升外部集成和批量导入效率。",
+        "文件历史改为可选功能，并支持配置有限的版本保留数量。",
+        "扩展定时导入，支持跨项目监控以及按来源名称或路径过滤。",
+        "支持使用系统默认程序打开原始资料，新增全局设置快捷键，并加入俄语和意大利语界面。",
+        "完善本地 MinerU 鉴权、受信任代理 TLS 选项、CJK 文件名和 Ingest 结构化数据保留。",
+        "优化现有功能，并修复稳定性、兼容性、索引和数据完整性问题。",
+      ],
+    },
+  },
+  {
+    version: "0.6.8",
+    date: "2026-08-07",
+    highlights: {
+      en: [
+        "Integrated AnyDoc document parsing with broader Word, PowerPoint, Excel, OpenDocument, and RTF support, richer structure preservation, safe legacy fallback, and versioned extraction caches.",
+        "Improved large knowledge graph loading, caching, and community analysis performance.",
+        "Added file version history usage and cleanup controls.",
+        "Improved scheduled import cleanup when source files are removed or excluded.",
+        "Fixed incomplete Deep Research output being saved as successful and added retry support.",
+        "Improved GPT-5, OpenAI o-series, and Azure model parameter compatibility.",
+        "Improved existing features and fixed stability and compatibility issues.",
+      ],
+      zh: [
+        "集成 AnyDoc 文档解析，扩展 Word、PowerPoint、Excel、OpenDocument 和 RTF 格式支持，增强结构保留，并支持旧解析器安全回退与解析缓存版本管理。",
+        "优化大型知识图谱的加载、缓存和社区分析性能。",
+        "新增文件版本历史占用查看与清理功能。",
+        "完善定时导入源文件删除或排除后的同步清理。",
+        "修复深度研究内容不完整仍被保存为成功的问题，并支持失败重试。",
+        "改进 GPT-5、OpenAI o 系列及 Azure 模型参数兼容性。",
+        "优化现有功能，并修复稳定性与兼容性问题。",
+      ],
+    },
+  },
+  {
+    version: "0.6.6",
+    date: "2026-07-27",
+    highlights: {
+      en: [
+        "Added Bocha Web Search as an external search provider for Agent, Deep Research, API, and MCP workflows.",
+        "Added targeted recovery for truncated Ingest output so missing Wiki files can be regenerated automatically.",
+        "Improved cross-platform PDF preview support.",
+        "Improved Windows scheduled imports, nested paths, drive-letter and UNC path handling, Clip Server recovery, and overall stability.",
+      ],
+      zh: [
+        "新增博查网页搜索 Provider，可用于 Agent、Deep Research、API 和 MCP 工作流。",
+        "新增 Ingest 截断定向恢复，可自动重新生成缺失的 Wiki 文件。",
+        "完善 PDF 跨平台预览支持。",
+        "优化 Windows 计划导入、嵌套目录、盘符和 UNC 路径处理，并改进 Clip Server 恢复与整体稳定性。",
+      ],
+    },
+  },
+  {
     version: "0.6.5",
     date: "2026-07-20",
     highlights: {

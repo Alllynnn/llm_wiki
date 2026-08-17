@@ -10,8 +10,12 @@ describe("file types", () => {
   it("recognizes backend-extracted document previews", () => {
     expect(isExtractedTextPreviewFile("/project/raw/sources/report.doc")).toBe(true)
     expect(isExtractedTextPreviewFile("/project/raw/sources/report.docx")).toBe(true)
+    expect(isExtractedTextPreviewFile("/project/raw/sources/report.docm")).toBe(true)
     expect(isExtractedTextPreviewFile("/project/raw/sources/slides.pptx")).toBe(true)
+    expect(isExtractedTextPreviewFile("/project/raw/sources/slides.ppsm")).toBe(true)
     expect(isExtractedTextPreviewFile("/project/raw/sources/sheet.xlsx")).toBe(true)
+    expect(isExtractedTextPreviewFile("/project/raw/sources/sheet.xlsb")).toBe(true)
+    expect(isExtractedTextPreviewFile("/project/raw/sources/notes.rtf")).toBe(true)
     expect(isExtractedTextPreviewFile("/project/raw/sources/book.epub")).toBe(true)
     expect(isExtractedTextPreviewFile("C:\\books\\book.MOBI")).toBe(true)
     expect(isExtractedTextPreviewFile("C:\\notes\\journal.ORG")).toBe(true)
@@ -34,5 +38,12 @@ describe("file types", () => {
     expect(getFileCategory("/project/diagram.mmd")).toBe("code")
     expect(getFileCategory("C:\\project\\diagram.MERMAID")).toBe("code")
     expect(getCodeLanguage("/project/diagram.mmd")).toBe("mermaid")
+  })
+
+  it("classifies extensionless basenames (Dockerfile/Makefile) under a directory as code", () => {
+    // Bare names already worked; path-prefixed ones regressed to "unknown" (binary).
+    expect(getFileCategory("Dockerfile")).toBe("code")
+    expect(getFileCategory("/project/Dockerfile")).toBe("code")
+    expect(getFileCategory("C:\\project\\Makefile")).toBe("code")
   })
 })
