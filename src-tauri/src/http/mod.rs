@@ -725,7 +725,8 @@ mod tests {
                 }),
             )
             .unwrap();
-        let project_id = crate::core::project::project_id_from_canonical_path(&root.join("proj"));
+        let project_path = root.join("proj").canonicalize().unwrap();
+        let project_id = crate::core::project::project_id_from_canonical_path(&project_path);
         let app = main_router(state.clone());
         let cookie = login(app.clone(), "alice", "pw").await;
         let resp = app
