@@ -273,10 +273,15 @@ async fn embed_page(
         .user_data
         .load_config(&user.id)
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    let embedding_config = crate::http::user_config::embedding_config_from_user(&user_config)
-        .ok_or_else(|| {
-            ApiError::bad_request("EMBEDDING_NOT_CONFIGURED", "Embedding is not configured")
-        })?;
+    let embedding_config =
+        crate::http::user_config::command_embedding_config_from_user(&user_config).ok_or_else(
+            || {
+                ApiError::bad_request(
+                    "EMBEDDING_NOT_CONFIGURED",
+                    "Embedding is not configured",
+                )
+            },
+        )?;
     let _slot = try_acquire_page_embed_slot().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
